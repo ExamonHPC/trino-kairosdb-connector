@@ -23,6 +23,7 @@ public class KairosdbModule
         binder.bind(KairosdbConnectorId.class).toInstance(new KairosdbConnectorId(catalogName));
         binder.bind(KairosdbConnector.class).in(Scopes.SINGLETON);
         binder.bind(KairosdbMetadata.class).in(Scopes.SINGLETON);
+        binder.bind(KairosdbClient.class).in(Scopes.SINGLETON);
 
         configBinder(binder).bindConfig(KairosdbConfig.class);
     }

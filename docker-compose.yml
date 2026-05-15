@@ -13,6 +13,23 @@ services:
 
   kairosdb:
     image: examonhpc/kairosdb:1.2.2
-    ports:
-      - "4242:4242"
-      - "8081:8080"
+    # Run with the in-process H2 datastore so the container is self-contained
+    # (no separate Cassandra needed for local development and CI).  The image
+    # ships with both datastore modules; we just flip the active one.
+    environment:
+      - KAIROS_JETTY_PORT=8080
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        sed -i
+        -e 's|^kairosdb.service.datastore=org.kairosdb.datastore.cassandra.CassandraModule|#&|'
+        -e 's|^#kairosdb.service.datastore=org.kairosdb.datastore.h2.H2Module|kairosdb.service.datastore=org.kairosdb.datastore.h2.H2Module|'
+        /opt/kairosdb/conf/kairosdb.properties &&
+        exec /usr/bin/config-kairos.sh
+    # The container's 8080/4242 ports are reachable from the trino service
+    # via docker's internal network and don't need host-side mappings.
+    # Uncomment the "ports:" block below if you want to hit KairosDB from
+    # the host (and make sure the host ports are free).
+    # ports:
+    #   - "4242:4242"
+    #   - "8081:8080"
