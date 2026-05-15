@@ -9,6 +9,7 @@ import io.trino.spi.connector.ConnectorSplit;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import static java.util.Objects.requireNonNull;
 
@@ -31,6 +32,7 @@ public final class KairosdbSplit
     private final long startMillis;
     private final long endMillis;
     private final Map<String, List<String>> tagFilters;
+    private final Optional<Long> limit;
 
     @JsonCreator
     public KairosdbSplit(
@@ -39,7 +41,8 @@ public final class KairosdbSplit
             @JsonProperty("tableName") String tableName,
             @JsonProperty("startMillis") long startMillis,
             @JsonProperty("endMillis") long endMillis,
-            @JsonProperty("tagFilters") Map<String, List<String>> tagFilters)
+            @JsonProperty("tagFilters") Map<String, List<String>> tagFilters,
+            @JsonProperty("limit") Optional<Long> limit)
     {
         this.connectorId = requireNonNull(connectorId, "connectorId is null");
         this.schemaName = requireNonNull(schemaName, "schemaName is null");
@@ -47,11 +50,23 @@ public final class KairosdbSplit
         this.startMillis = startMillis;
         this.endMillis = endMillis;
         this.tagFilters = copyImmutable(tagFilters);
+        this.limit = requireNonNull(limit, "limit is null");
     }
 
     public KairosdbSplit(String connectorId, String schemaName, String tableName, long startMillis, long endMillis)
     {
-        this(connectorId, schemaName, tableName, startMillis, endMillis, ImmutableMap.of());
+        this(connectorId, schemaName, tableName, startMillis, endMillis, ImmutableMap.of(), Optional.empty());
+    }
+
+    public KairosdbSplit(
+            String connectorId,
+            String schemaName,
+            String tableName,
+            long startMillis,
+            long endMillis,
+            Map<String, List<String>> tagFilters)
+    {
+        this(connectorId, schemaName, tableName, startMillis, endMillis, tagFilters, Optional.empty());
     }
 
     private static Map<String, List<String>> copyImmutable(Map<String, List<String>> source)
@@ -102,6 +117,12 @@ public final class KairosdbSplit
         return tagFilters;
     }
 
+    @JsonProperty
+    public Optional<Long> getLimit()
+    {
+        return limit;
+    }
+
     @Override
     public List<HostAddress> getAddresses()
     {
@@ -117,6 +138,7 @@ public final class KairosdbSplit
         if (!tagFilters.isEmpty()) {
             sb.append(' ').append(tagFilters);
         }
+        limit.ifPresent(l -> sb.append(" limit=").append(l));
         return sb.append('}').toString();
     }
 }

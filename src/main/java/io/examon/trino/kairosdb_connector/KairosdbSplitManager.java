@@ -16,6 +16,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import static java.util.Objects.requireNonNull;
 
@@ -34,6 +35,14 @@ import static java.util.Objects.requireNonNull;
  * inclusive on both ends, so without that gap a datapoint landing exactly on
  * a slice boundary would be returned by both neighbours.  This is the same
  * fix the production connector carried for several releases.
+ *
+ * <p>When a {@code LIMIT N} has been pushed down, the manager emits exactly
+ * <em>one</em> split covering the whole time window and carrying the limit.
+ * Time-based fan-out would multiply the row count: with K splits the
+ * connector could legally return up to K * N rows because each split is an
+ * independent KairosDB query.  Collapsing to one split lets KairosDB enforce
+ * the cap itself; Trino keeps its own LIMIT operator above us as a backstop
+ * (see KairosdbMetadata.applyLimit for {@code limitGuaranteed = false}).
  */
 public class KairosdbSplitManager
         implements ConnectorSplitManager
@@ -66,9 +75,25 @@ public class KairosdbSplitManager
         long endMillis = handle.getPushedEndMillis().orElse(now);
         long splitMillis = config.getSplitSize().toMillis();
         Map<String, List<String>> tagFilters = handle.getPushedTagFilters();
+        Optional<Long> limit = handle.getPushedLimit();
 
-        List<KairosdbSplit> splits = chopTimeRange(handle, startMillis, endMillis, splitMillis, tagFilters);
-        log.debug("Generated %d splits for %s.%s over [%d, %d] (pushed=%s, tags=%s) with split size %d ms",
+        List<KairosdbSplit> splits;
+        if (limit.isPresent()) {
+            // Single full-range split; KairosDB enforces the cap server-side.
+            splits = ImmutableList.of(new KairosdbSplit(
+                    connectorId.toString(),
+                    handle.getSchemaName(),
+                    handle.getTableName(),
+                    startMillis,
+                    endMillis,
+                    tagFilters,
+                    limit));
+        }
+        else {
+            splits = chopTimeRange(handle, startMillis, endMillis, splitMillis, tagFilters);
+        }
+
+        log.debug("Generated %d split(s) for %s.%s over [%d, %d] (pushed=%s, tags=%s, limit=%s) with split size %d ms",
                 splits.size(),
                 handle.getSchemaName(),
                 handle.getTableName(),
@@ -76,6 +101,7 @@ public class KairosdbSplitManager
                 endMillis,
                 handle.getPushedStartMillis().isPresent() || handle.getPushedEndMillis().isPresent(),
                 tagFilters,
+                limit.orElse(null),
                 splitMillis);
         return new FixedSplitSource(splits);
     }

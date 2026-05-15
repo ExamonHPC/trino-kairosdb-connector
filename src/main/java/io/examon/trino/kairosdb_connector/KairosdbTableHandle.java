@@ -18,9 +18,9 @@ import static java.util.Objects.requireNonNull;
  * Identifies the metric a query targets and carries any predicate state the
  * metadata layer has pushed down to KairosDB.
  *
- * <p>Currently pushed: timestamp range and tag filters.  LIMIT and sampling
- * aggregators land in follow-up commits.  Each pushed-down piece is stored
- * as a plain JSON-serialisable primitive (no opaque builder objects) so the
+ * <p>Currently pushed: timestamp range, tag filters and LIMIT.  Sampling
+ * aggregators land in the next commit.  Each pushed-down piece is stored as
+ * a plain JSON-serialisable primitive (no opaque builder objects) so the
  * handle round-trips cleanly between coordinator and worker.
  *
  * <p>Tag filters use KairosDB-side <em>original</em> tag names as keys (case
@@ -38,6 +38,7 @@ public final class KairosdbTableHandle
     private final Optional<Long> pushedStartMillis;
     private final Optional<Long> pushedEndMillis;
     private final Map<String, List<String>> pushedTagFilters;
+    private final Optional<Long> pushedLimit;
 
     @JsonCreator
     public KairosdbTableHandle(
@@ -46,7 +47,8 @@ public final class KairosdbTableHandle
             @JsonProperty("tableName") String tableName,
             @JsonProperty("pushedStartMillis") Optional<Long> pushedStartMillis,
             @JsonProperty("pushedEndMillis") Optional<Long> pushedEndMillis,
-            @JsonProperty("pushedTagFilters") Map<String, List<String>> pushedTagFilters)
+            @JsonProperty("pushedTagFilters") Map<String, List<String>> pushedTagFilters,
+            @JsonProperty("pushedLimit") Optional<Long> pushedLimit)
     {
         this.connectorId = requireNonNull(connectorId, "connectorId is null");
         this.schemaName = requireNonNull(schemaName, "schemaName is null");
@@ -54,11 +56,12 @@ public final class KairosdbTableHandle
         this.pushedStartMillis = requireNonNull(pushedStartMillis, "pushedStartMillis is null");
         this.pushedEndMillis = requireNonNull(pushedEndMillis, "pushedEndMillis is null");
         this.pushedTagFilters = copyImmutable(pushedTagFilters);
+        this.pushedLimit = requireNonNull(pushedLimit, "pushedLimit is null");
     }
 
     public KairosdbTableHandle(String connectorId, String schemaName, String tableName)
     {
-        this(connectorId, schemaName, tableName, Optional.empty(), Optional.empty(), ImmutableMap.of());
+        this(connectorId, schemaName, tableName, Optional.empty(), Optional.empty(), ImmutableMap.of(), Optional.empty());
     }
 
     private static Map<String, List<String>> copyImmutable(Map<String, List<String>> source)
@@ -109,14 +112,25 @@ public final class KairosdbTableHandle
         return pushedTagFilters;
     }
 
+    @JsonProperty
+    public Optional<Long> getPushedLimit()
+    {
+        return pushedLimit;
+    }
+
     public KairosdbTableHandle withTimeRange(Optional<Long> startMillis, Optional<Long> endMillis)
     {
-        return new KairosdbTableHandle(connectorId, schemaName, tableName, startMillis, endMillis, pushedTagFilters);
+        return new KairosdbTableHandle(connectorId, schemaName, tableName, startMillis, endMillis, pushedTagFilters, pushedLimit);
     }
 
     public KairosdbTableHandle withTagFilters(Map<String, List<String>> tagFilters)
     {
-        return new KairosdbTableHandle(connectorId, schemaName, tableName, pushedStartMillis, pushedEndMillis, tagFilters);
+        return new KairosdbTableHandle(connectorId, schemaName, tableName, pushedStartMillis, pushedEndMillis, tagFilters, pushedLimit);
+    }
+
+    public KairosdbTableHandle withLimit(Optional<Long> limit)
+    {
+        return new KairosdbTableHandle(connectorId, schemaName, tableName, pushedStartMillis, pushedEndMillis, pushedTagFilters, limit);
     }
 
     public SchemaTableName toSchemaTableName()
@@ -127,7 +141,7 @@ public final class KairosdbTableHandle
     @Override
     public int hashCode()
     {
-        return Objects.hash(connectorId, schemaName, tableName, pushedStartMillis, pushedEndMillis, pushedTagFilters);
+        return Objects.hash(connectorId, schemaName, tableName, pushedStartMillis, pushedEndMillis, pushedTagFilters, pushedLimit);
     }
 
     @Override
@@ -145,7 +159,8 @@ public final class KairosdbTableHandle
                 && Objects.equals(tableName, other.tableName)
                 && Objects.equals(pushedStartMillis, other.pushedStartMillis)
                 && Objects.equals(pushedEndMillis, other.pushedEndMillis)
-                && Objects.equals(pushedTagFilters, other.pushedTagFilters);
+                && Objects.equals(pushedTagFilters, other.pushedTagFilters)
+                && Objects.equals(pushedLimit, other.pushedLimit);
     }
 
     @Override
@@ -163,6 +178,7 @@ public final class KairosdbTableHandle
         if (!pushedTagFilters.isEmpty()) {
             sb.append(" tags=").append(pushedTagFilters);
         }
+        pushedLimit.ifPresent(l -> sb.append(" limit=").append(l));
         return sb.toString();
     }
 }

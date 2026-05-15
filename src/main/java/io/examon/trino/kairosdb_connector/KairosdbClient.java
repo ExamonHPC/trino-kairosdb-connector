@@ -335,12 +335,20 @@ public class KairosdbClient
      * (OR semantics within a tag, AND semantics across tags).  Empty values
      * are dropped; an entirely empty map sends no {@code tags} block and the
      * metric is returned unfiltered.
+     *
+     * <p>{@code limit}, when present, caps the number of datapoints KairosDB
+     * returns for this metric (i.e. it is rendered as {@code "limit": N} on
+     * the metric block).  The cap is best-effort: KairosDB may return fewer
+     * rows if the underlying data is sparser than {@code limit}, and Trino
+     * keeps its own LIMIT operator above the connector for that reason
+     * (see {@code applyLimit}).
      */
     public List<QueryDatapointsResponse.DataResult> queryDatapoints(
             String metricName,
             long startMillis,
             long endMillis,
-            Map<String, List<String>> tagFilters)
+            Map<String, List<String>> tagFilters,
+            Optional<Long> limit)
     {
         List<String> tagKeys = getOriginalTagKeys(metricName);
 
@@ -349,6 +357,7 @@ public class KairosdbClient
         if (tagFilters != null && !tagFilters.isEmpty()) {
             metric.put("tags", tagFilters);
         }
+        limit.ifPresent(l -> metric.put("limit", l));
         if (!tagKeys.isEmpty()) {
             metric.put("group_by", List.of(Map.of(
                     "name", "tag",
@@ -360,8 +369,8 @@ public class KairosdbClient
                 "end_absolute", endMillis,
                 "metrics", List.of(metric));
 
-        log.debug("Querying KairosDB: metric=%s window=[%d,%d] tags=%s group_by=%s",
-                metricName, startMillis, endMillis, tagFilters, tagKeys);
+        log.debug("Querying KairosDB: metric=%s window=[%d,%d] tags=%s limit=%s group_by=%s",
+                metricName, startMillis, endMillis, tagFilters, limit.orElse(null), tagKeys);
 
         HttpUrl url = baseUrl.newBuilder().addPathSegments(QUERY_PATH).build();
         String json;

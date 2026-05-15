@@ -13,6 +13,7 @@ import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.ConnectorTableVersion;
 import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.ConstraintApplicationResult;
+import io.trino.spi.connector.LimitApplicationResult;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.TupleDomain;
@@ -222,6 +223,37 @@ public class KairosdbMetadata
                 TupleDomain.withColumnDomains(remaining),
                 constraint.getExpression(),
                 false));
+    }
+
+    /**
+     * Pushes a {@code LIMIT N} into KairosDB's native per-metric cap.
+     *
+     * <p>Because KairosDB may legitimately return fewer rows than requested
+     * (data is sparse), {@code limitGuaranteed} is {@code false}: Trino
+     * keeps its own LIMIT operator above us as a backstop and we are free
+     * to over-deliver only as a (small) inefficiency, never as incorrect
+     * results.  When the limit is pushed down, {@link KairosdbSplitManager}
+     * collapses to a single full-range split so KairosDB sees one query
+     * and applies the cap server-side (a fan-out of K splits would each
+     * legally return up to N rows, totalling K * N).
+     *
+     * <p>The loop guard prevents Trino from re-invoking us forever with
+     * the same limit: if the handle already carries it, we return empty.
+     */
+    @Override
+    public Optional<LimitApplicationResult<ConnectorTableHandle>> applyLimit(
+            ConnectorSession session, ConnectorTableHandle handle, long limit)
+    {
+        KairosdbTableHandle table = (KairosdbTableHandle) handle;
+        if (limit <= 0) {
+            return Optional.empty();
+        }
+        if (table.getPushedLimit().filter(existing -> existing == limit).isPresent()) {
+            return Optional.empty();
+        }
+        KairosdbTableHandle pushed = table.withLimit(Optional.of(limit));
+        log.info("Pushed limit=%d into %s.%s", limit, pushed.getSchemaName(), pushed.getTableName());
+        return Optional.of(new LimitApplicationResult<>(pushed, false, false));
     }
 
     /**
