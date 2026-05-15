@@ -224,9 +224,17 @@
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-surefire-plugin</artifactId>
                         <version>3.2.5</version>
-                        <configuration>
-                            <excludedGroups></excludedGroups>
+                        <configuration combine.self="override">
                             <groups>integration</groups>
+                            <!-- IT* is the convention for integration tests;
+                                 surefire's default includes only Test*/*Test/*Tests. -->
+                            <includes>
+                                <include>**/Test*.java</include>
+                                <include>**/*Test.java</include>
+                                <include>**/*Tests.java</include>
+                                <include>**/IT*.java</include>
+                                <include>**/*IT.java</include>
+                            </includes>
                         </configuration>
                     </plugin>
                 </plugins>
