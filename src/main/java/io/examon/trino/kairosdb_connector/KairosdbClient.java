@@ -29,6 +29,7 @@ import java.io.IOException;
 import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -313,21 +314,30 @@ public class KairosdbClient
      * grouping, KairosDB returns every datapoint interleaved into a single
      * stream with a union of tag values, which makes it impossible to tell
      * which tag combination a given datapoint came from.
+     *
+     * <p>{@code tagFilters} is a possibly-empty map of
+     * <em>original-case</em> KairosDB tag names to lists of admitted values
+     * (OR semantics within a tag, AND semantics across tags).  Empty values
+     * are dropped; an entirely empty map sends no {@code tags} block and the
+     * metric is returned unfiltered.
      */
-    public List<QueryDatapointsResponse.DataResult> queryDatapoints(String metricName, long startMillis, long endMillis)
+    public List<QueryDatapointsResponse.DataResult> queryDatapoints(
+            String metricName,
+            long startMillis,
+            long endMillis,
+            Map<String, List<String>> tagFilters)
     {
         List<String> tagKeys = getOriginalTagKeys(metricName);
 
-        Map<String, Object> metric;
-        if (tagKeys.isEmpty()) {
-            metric = Map.of("name", metricName);
+        LinkedHashMap<String, Object> metric = new LinkedHashMap<>();
+        metric.put("name", metricName);
+        if (tagFilters != null && !tagFilters.isEmpty()) {
+            metric.put("tags", tagFilters);
         }
-        else {
-            metric = Map.of(
-                    "name", metricName,
-                    "group_by", List.of(Map.of(
-                            "name", "tag",
-                            "tags", tagKeys)));
+        if (!tagKeys.isEmpty()) {
+            metric.put("group_by", List.of(Map.of(
+                    "name", "tag",
+                    "tags", tagKeys)));
         }
 
         Map<String, Object> request = Map.of(
@@ -335,7 +345,8 @@ public class KairosdbClient
                 "end_absolute", endMillis,
                 "metrics", List.of(metric));
 
-        log.debug("Querying KairosDB: metric=%s window=[%d,%d] group_by=%s", metricName, startMillis, endMillis, tagKeys);
+        log.debug("Querying KairosDB: metric=%s window=[%d,%d] tags=%s group_by=%s",
+                metricName, startMillis, endMillis, tagFilters, tagKeys);
 
         HttpUrl url = baseUrl.newBuilder().addPathSegments(QUERY_PATH).build();
         String json;

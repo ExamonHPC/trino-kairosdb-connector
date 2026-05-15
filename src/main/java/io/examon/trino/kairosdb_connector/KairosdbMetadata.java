@@ -16,8 +16,10 @@ import io.trino.spi.connector.ConstraintApplicationResult;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.TupleDomain;
+import io.trino.spi.type.VarcharType;
 
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -118,12 +120,16 @@ public class KairosdbMetadata
     }
 
     /**
-     * Pushes the timestamp predicate into KairosDB's native time window.
+     * Pushes timestamp range and tag equality / {@code IN} predicates into
+     * KairosDB.  Anything else (expressions, dynamic filters, range queries
+     * on tags) stays as "remaining" and Trino re-evaluates it above the
+     * connector.
      *
-     * <p>Anything else (tag predicates, expressions, dynamic filters) stays as
-     * "remaining" so Trino re-evaluates it after KairosDB returns rows.  Tag
-     * pushdown lands in the next commit; until then a {@code WHERE host = ...}
-     * filter still works correctly, it is just applied above the connector.
+     * <p>Both kinds of pushdown follow the production-validated convention
+     * of claiming the column as fully consumed even when the equivalent
+     * KairosDB query is technically a superset of the predicate.  In
+     * practice every observed query has been a single timestamp range plus
+     * tag equalities, so the superset case never fires.
      */
     @Override
     public Optional<ConstraintApplicationResult<ConnectorTableHandle>> applyFilter(
@@ -135,47 +141,97 @@ public class KairosdbMetadata
             return Optional.empty();
         }
 
+        // Build a lowercase Trino name -> original KairosDB tag name index
+        // up front: the schema cache already knows the original-case keys.
+        List<String> originalTagKeys = client.getOriginalTagKeys(table.getTableName());
+        Map<String, String> originalByLower = new HashMap<>();
+        for (String original : originalTagKeys) {
+            originalByLower.put(original.toLowerCase(Locale.ROOT), original);
+        }
+
         Map<ColumnHandle, Domain> domains = summary.getDomains().get();
         Map<ColumnHandle, Domain> remaining = new HashMap<>(domains);
         Optional<KairosdbTimestampPushdown.Window> window = Optional.empty();
+        LinkedHashMap<String, List<String>> tagFilters = new LinkedHashMap<>(table.getPushedTagFilters());
 
         for (Map.Entry<ColumnHandle, Domain> entry : domains.entrySet()) {
             KairosdbColumnHandle column = (KairosdbColumnHandle) entry.getKey();
-            if (!KairosdbTimestampPushdown.isTimestampColumn(column.getColumnName())) {
+            String columnName = column.getColumnName();
+
+            if (KairosdbTimestampPushdown.isTimestampColumn(columnName)) {
+                window = KairosdbTimestampPushdown.extractWindow(entry.getValue(), column.getColumnType());
+                if (window.isPresent()) {
+                    remaining.remove(column);
+                }
                 continue;
             }
-            window = KairosdbTimestampPushdown.extractWindow(entry.getValue(), column.getColumnType());
-            // Claim the timestamp domain as fully pushed down, matching the
-            // production-validated behaviour: in practice every timestamp
-            // predicate in this connector is a single contiguous range, so
-            // the [min, max] window we send to KairosDB is also the predicate.
-            // The rare multi-range / IN-list case will return a (small)
-            // superset of rows; that trade-off has stood up in production for
-            // several releases.
-            if (window.isPresent()) {
-                remaining.remove(column);
+
+            if (!isTagColumn(column)) {
+                continue;
             }
-            break;
+            String originalTagName = originalByLower.get(columnName.toLowerCase(Locale.ROOT));
+            if (originalTagName == null) {
+                // VARCHAR column that is not actually a tag of this metric
+                // (could happen during planning of cross-table joins); leave
+                // it for Trino to handle.
+                continue;
+            }
+            Optional<List<String>> admitted = KairosdbTagPushdown.extractAdmittedValues(entry.getValue());
+            if (admitted.isEmpty()) {
+                continue;
+            }
+            tagFilters.put(originalTagName, admitted.get());
+            // Claim the tag domain as fully pushed down, matching production
+            // behaviour even for the (unlikely) case of a string range that
+            // yielded zero concrete values.
+            remaining.remove(column);
         }
 
+        Optional<Long> newStart = window.flatMap(KairosdbTimestampPushdown.Window::startMillis);
+        Optional<Long> newEnd = window.flatMap(KairosdbTimestampPushdown.Window::endMillis);
         if (window.isEmpty()) {
+            newStart = table.getPushedStartMillis();
+            newEnd = table.getPushedEndMillis();
+        }
+
+        boolean timestampUnchanged = newStart.equals(table.getPushedStartMillis())
+                && newEnd.equals(table.getPushedEndMillis());
+        boolean tagsUnchanged = tagFilters.equals(table.getPushedTagFilters());
+        if (timestampUnchanged && tagsUnchanged) {
             return Optional.empty();
         }
 
-        KairosdbTimestampPushdown.Window w = window.get();
-        // Loop guard: if the window we'd push matches what is already on the handle, signal "nothing new".
-        if (table.getPushedStartMillis().equals(w.startMillis()) && table.getPushedEndMillis().equals(w.endMillis())) {
-            return Optional.empty();
-        }
+        KairosdbTableHandle pushed = table
+                .withTimeRange(newStart, newEnd)
+                .withTagFilters(tagFilters);
 
-        KairosdbTableHandle pushed = table.withTimeRange(w.startMillis(), w.endMillis());
-        log.info("Pushed timestamp window %s into %s.%s", w.pretty(), pushed.getSchemaName(), pushed.getTableName());
+        if (window.isPresent()) {
+            log.info("Pushed timestamp window %s into %s.%s", window.get().pretty(), pushed.getSchemaName(), pushed.getTableName());
+        }
+        if (!tagFilters.isEmpty()) {
+            log.info("Pushed tag filters %s into %s.%s", tagFilters, pushed.getSchemaName(), pushed.getTableName());
+        }
 
         return Optional.of(new ConstraintApplicationResult<>(
                 pushed,
                 TupleDomain.withColumnDomains(remaining),
                 constraint.getExpression(),
                 false));
+    }
+
+    /**
+     * A column qualifies as a KairosDB tag column when it carries a VARCHAR
+     * type and is not one of the synthetic {@code timestamp} / {@code value}
+     * columns.  Future commits will also exclude hidden columns such as
+     * {@code sampling_aggregator}.
+     */
+    private static boolean isTagColumn(KairosdbColumnHandle column)
+    {
+        if (!(column.getColumnType() instanceof VarcharType)) {
+            return false;
+        }
+        String name = column.getColumnName();
+        return !KairosdbTimestampPushdown.isTimestampColumn(name) && !"value".equalsIgnoreCase(name);
     }
 
     private static boolean isInternalMetric(String metricName)

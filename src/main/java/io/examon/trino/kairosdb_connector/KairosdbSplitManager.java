@@ -15,6 +15,7 @@ import io.trino.spi.connector.Constraint;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 
 import static java.util.Objects.requireNonNull;
 
@@ -64,20 +65,27 @@ public class KairosdbSplitManager
                 .orElseGet(() -> now - Duration.ofHours(config.getDefaultStartHours()).toMillis());
         long endMillis = handle.getPushedEndMillis().orElse(now);
         long splitMillis = config.getSplitSize().toMillis();
+        Map<String, List<String>> tagFilters = handle.getPushedTagFilters();
 
-        List<KairosdbSplit> splits = chopTimeRange(handle, startMillis, endMillis, splitMillis);
-        log.debug("Generated %d splits for %s.%s over [%d, %d] (pushed=%s) with split size %d ms",
+        List<KairosdbSplit> splits = chopTimeRange(handle, startMillis, endMillis, splitMillis, tagFilters);
+        log.debug("Generated %d splits for %s.%s over [%d, %d] (pushed=%s, tags=%s) with split size %d ms",
                 splits.size(),
                 handle.getSchemaName(),
                 handle.getTableName(),
                 startMillis,
                 endMillis,
                 handle.getPushedStartMillis().isPresent() || handle.getPushedEndMillis().isPresent(),
+                tagFilters,
                 splitMillis);
         return new FixedSplitSource(splits);
     }
 
-    private List<KairosdbSplit> chopTimeRange(KairosdbTableHandle handle, long startMillis, long endMillis, long splitMillis)
+    private List<KairosdbSplit> chopTimeRange(
+            KairosdbTableHandle handle,
+            long startMillis,
+            long endMillis,
+            long splitMillis,
+            Map<String, List<String>> tagFilters)
     {
         if (endMillis < startMillis) {
             return ImmutableList.of();
@@ -95,7 +103,8 @@ public class KairosdbSplitManager
                     handle.getSchemaName(),
                     handle.getTableName(),
                     cursor,
-                    sliceEnd));
+                    sliceEnd,
+                    tagFilters));
             if (sliceEnd >= endMillis) {
                 break;
             }

@@ -3,21 +3,24 @@ package io.examon.trino.kairosdb_connector;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import io.trino.spi.HostAddress;
 import io.trino.spi.connector.ConnectorSplit;
 
 import java.util.List;
+import java.util.Map;
 
 import static java.util.Objects.requireNonNull;
 
 /**
  * One slice of a metric query, sized to {@code kairosdb.split-size}.
  *
- * <p>The slice's {@code [startMillis, endMillis)} window is closed at the
- * coordinator (in the split manager) and shipped to whichever worker Trino
- * picks.  KairosDB is reachable from every Trino worker, so we expose no host
- * preferences ({@link #getAddresses()} is empty) and Trino is free to
- * schedule us anywhere.
+ * <p>The slice's inclusive {@code [startMillis, endMillis]} window and any
+ * pushed-down tag filters are closed at the coordinator (in the split
+ * manager) and shipped to whichever worker Trino picks.  KairosDB is
+ * reachable from every Trino worker, so we expose no host preferences
+ * ({@link #getAddresses()} is empty) and Trino is free to schedule us
+ * anywhere.
  */
 public final class KairosdbSplit
         implements ConnectorSplit
@@ -27,6 +30,7 @@ public final class KairosdbSplit
     private final String tableName;
     private final long startMillis;
     private final long endMillis;
+    private final Map<String, List<String>> tagFilters;
 
     @JsonCreator
     public KairosdbSplit(
@@ -34,13 +38,32 @@ public final class KairosdbSplit
             @JsonProperty("schemaName") String schemaName,
             @JsonProperty("tableName") String tableName,
             @JsonProperty("startMillis") long startMillis,
-            @JsonProperty("endMillis") long endMillis)
+            @JsonProperty("endMillis") long endMillis,
+            @JsonProperty("tagFilters") Map<String, List<String>> tagFilters)
     {
         this.connectorId = requireNonNull(connectorId, "connectorId is null");
         this.schemaName = requireNonNull(schemaName, "schemaName is null");
         this.tableName = requireNonNull(tableName, "tableName is null");
         this.startMillis = startMillis;
         this.endMillis = endMillis;
+        this.tagFilters = copyImmutable(tagFilters);
+    }
+
+    public KairosdbSplit(String connectorId, String schemaName, String tableName, long startMillis, long endMillis)
+    {
+        this(connectorId, schemaName, tableName, startMillis, endMillis, ImmutableMap.of());
+    }
+
+    private static Map<String, List<String>> copyImmutable(Map<String, List<String>> source)
+    {
+        if (source == null || source.isEmpty()) {
+            return ImmutableMap.of();
+        }
+        ImmutableMap.Builder<String, List<String>> b = ImmutableMap.builder();
+        for (Map.Entry<String, List<String>> e : source.entrySet()) {
+            b.put(e.getKey(), ImmutableList.copyOf(e.getValue()));
+        }
+        return b.buildOrThrow();
     }
 
     @JsonProperty
@@ -73,6 +96,12 @@ public final class KairosdbSplit
         return endMillis;
     }
 
+    @JsonProperty
+    public Map<String, List<String>> getTagFilters()
+    {
+        return tagFilters;
+    }
+
     @Override
     public List<HostAddress> getAddresses()
     {
@@ -82,6 +111,12 @@ public final class KairosdbSplit
     @Override
     public String toString()
     {
-        return "KairosdbSplit{" + schemaName + "." + tableName + " [" + startMillis + ", " + endMillis + ")}";
+        StringBuilder sb = new StringBuilder("KairosdbSplit{")
+                .append(schemaName).append('.').append(tableName)
+                .append(" [").append(startMillis).append(", ").append(endMillis).append(']');
+        if (!tagFilters.isEmpty()) {
+            sb.append(' ').append(tagFilters);
+        }
+        return sb.append('}').toString();
     }
 }

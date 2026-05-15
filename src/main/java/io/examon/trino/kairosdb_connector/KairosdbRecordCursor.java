@@ -115,7 +115,11 @@ public class KairosdbRecordCursor
     private void fetchOnce()
     {
         fetched = true;
-        List<DataResult> results = client.queryDatapoints(split.getTableName(), split.getStartMillis(), split.getEndMillis());
+        List<DataResult> results = client.queryDatapoints(
+                split.getTableName(),
+                split.getStartMillis(),
+                split.getEndMillis(),
+                split.getTagFilters());
         this.resultIterator = results.iterator();
     }
 
