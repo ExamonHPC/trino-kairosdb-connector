@@ -26,6 +26,7 @@ public class KairosdbModule
         binder.bind(KairosdbClient.class).in(Scopes.SINGLETON);
         binder.bind(KairosdbSplitManager.class).in(Scopes.SINGLETON);
         binder.bind(KairosdbRecordSetProvider.class).in(Scopes.SINGLETON);
+        binder.bind(KairosdbSessionProperties.class).in(Scopes.SINGLETON);
 
         configBinder(binder).bindConfig(KairosdbConfig.class);
     }

@@ -9,7 +9,10 @@ import io.trino.spi.connector.ConnectorRecordSetProvider;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorSplitManager;
 import io.trino.spi.connector.ConnectorTransactionHandle;
+import io.trino.spi.session.PropertyMetadata;
 import io.trino.spi.transaction.IsolationLevel;
+
+import java.util.List;
 
 import static java.util.Objects.requireNonNull;
 
@@ -22,18 +25,21 @@ public class KairosdbConnector
     private final KairosdbMetadata metadata;
     private final KairosdbSplitManager splitManager;
     private final KairosdbRecordSetProvider recordSetProvider;
+    private final KairosdbSessionProperties sessionProperties;
 
     @Inject
     public KairosdbConnector(
             LifeCycleManager lifeCycleManager,
             KairosdbMetadata metadata,
             KairosdbSplitManager splitManager,
-            KairosdbRecordSetProvider recordSetProvider)
+            KairosdbRecordSetProvider recordSetProvider,
+            KairosdbSessionProperties sessionProperties)
     {
         this.lifeCycleManager = requireNonNull(lifeCycleManager, "lifeCycleManager is null");
         this.metadata = requireNonNull(metadata, "metadata is null");
         this.splitManager = requireNonNull(splitManager, "splitManager is null");
         this.recordSetProvider = requireNonNull(recordSetProvider, "recordSetProvider is null");
+        this.sessionProperties = requireNonNull(sessionProperties, "sessionProperties is null");
     }
 
     @Override
@@ -58,6 +64,12 @@ public class KairosdbConnector
     public ConnectorRecordSetProvider getRecordSetProvider()
     {
         return recordSetProvider;
+    }
+
+    @Override
+    public List<PropertyMetadata<?>> getSessionProperties()
+    {
+        return sessionProperties.getSessionProperties();
     }
 
     @Override

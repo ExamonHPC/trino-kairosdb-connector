@@ -18,6 +18,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
+import static io.examon.trino.kairosdb_connector.KairosdbSessionProperties.getDefaultStartHours;
+import static io.examon.trino.kairosdb_connector.KairosdbSessionProperties.getSplitSizeMillis;
+
 import static java.util.Objects.requireNonNull;
 
 /**
@@ -28,8 +31,13 @@ import static java.util.Objects.requireNonNull;
  * <ol>
  *   <li>The bounds the metadata layer pushed down from a
  *       {@code WHERE timestamp ...} predicate (either side may still be open);</li>
- *   <li>The connector defaults: {@code [now - default-start-hours, now]}.</li>
+ *   <li>{@code [now - default_start_hours, now]} where the look-back is the
+ *       session-property value if set, otherwise the catalog default
+ *       {@code kairosdb.timestamp.default-start-hours}.</li>
  * </ol>
+ *
+ * <p>Split width comes from the {@code split_size_millis} session property,
+ * which itself defaults to the catalog {@code kairosdb.split-size}.
  *
  * <p>Adjacent splits are offset by one millisecond.  KairosDB query bounds are
  * inclusive on both ends, so without that gap a datapoint landing exactly on
@@ -50,13 +58,11 @@ public class KairosdbSplitManager
     private static final Logger log = Logger.get(KairosdbSplitManager.class);
 
     private final KairosdbConnectorId connectorId;
-    private final KairosdbConfig config;
 
     @Inject
-    public KairosdbSplitManager(KairosdbConnectorId connectorId, KairosdbConfig config)
+    public KairosdbSplitManager(KairosdbConnectorId connectorId)
     {
         this.connectorId = requireNonNull(connectorId, "connectorId is null");
-        this.config = requireNonNull(config, "config is null");
     }
 
     @Override
@@ -70,10 +76,11 @@ public class KairosdbSplitManager
         KairosdbTableHandle handle = (KairosdbTableHandle) tableHandle;
 
         long now = Instant.now().toEpochMilli();
+        int defaultStartHours = getDefaultStartHours(session);
+        long splitMillis = getSplitSizeMillis(session);
         long startMillis = handle.getPushedStartMillis()
-                .orElseGet(() -> now - Duration.ofHours(config.getDefaultStartHours()).toMillis());
+                .orElseGet(() -> now - Duration.ofHours(defaultStartHours).toMillis());
         long endMillis = handle.getPushedEndMillis().orElse(now);
-        long splitMillis = config.getSplitSize().toMillis();
         Map<String, List<String>> tagFilters = handle.getPushedTagFilters();
         Optional<Long> limit = handle.getPushedLimit();
         List<String> aggregators = handle.getPushedAggregators();
