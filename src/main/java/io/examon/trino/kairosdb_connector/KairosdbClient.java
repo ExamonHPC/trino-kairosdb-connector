@@ -335,7 +335,7 @@ public class KairosdbClient
                 "end_absolute", endMillis,
                 "metrics", List.of(metric));
 
-        log.debug("Querying KairosDB: metric=%s window=[%d,%d) group_by=%s", metricName, startMillis, endMillis, tagKeys);
+        log.debug("Querying KairosDB: metric=%s window=[%d,%d] group_by=%s", metricName, startMillis, endMillis, tagKeys);
 
         HttpUrl url = baseUrl.newBuilder().addPathSegments(QUERY_PATH).build();
         String json;

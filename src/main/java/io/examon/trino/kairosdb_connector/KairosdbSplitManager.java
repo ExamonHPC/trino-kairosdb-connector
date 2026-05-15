@@ -22,9 +22,17 @@ import static java.util.Objects.requireNonNull;
  * Turns a table handle into a list of {@link KairosdbSplit}s, each covering a
  * {@code kairosdb.split-size}-wide window.
  *
- * <p>At this stage of the port the time window is fixed: now minus
- * {@code kairosdb.timestamp.default-start-hours} up to now.  Time-range
- * pushdown arrives in the next commit.
+ * <p>The active time window is, in order of precedence:
+ * <ol>
+ *   <li>The bounds the metadata layer pushed down from a
+ *       {@code WHERE timestamp ...} predicate (either side may still be open);</li>
+ *   <li>The connector defaults: {@code [now - default-start-hours, now]}.</li>
+ * </ol>
+ *
+ * <p>Adjacent splits are offset by one millisecond.  KairosDB query bounds are
+ * inclusive on both ends, so without that gap a datapoint landing exactly on
+ * a slice boundary would be returned by both neighbours.  This is the same
+ * fix the production connector carried for several releases.
  */
 public class KairosdbSplitManager
         implements ConnectorSplitManager
@@ -51,28 +59,36 @@ public class KairosdbSplitManager
     {
         KairosdbTableHandle handle = (KairosdbTableHandle) tableHandle;
 
-        long endMillis = Instant.now().toEpochMilli();
-        long startMillis = endMillis - Duration.ofHours(config.getDefaultStartHours()).toMillis();
+        long now = Instant.now().toEpochMilli();
+        long startMillis = handle.getPushedStartMillis()
+                .orElseGet(() -> now - Duration.ofHours(config.getDefaultStartHours()).toMillis());
+        long endMillis = handle.getPushedEndMillis().orElse(now);
         long splitMillis = config.getSplitSize().toMillis();
 
         List<KairosdbSplit> splits = chopTimeRange(handle, startMillis, endMillis, splitMillis);
-        log.debug("Generated %d splits for %s.%s over [%d, %d) with split size %d ms",
-                splits.size(), handle.getSchemaName(), handle.getTableName(), startMillis, endMillis, splitMillis);
+        log.debug("Generated %d splits for %s.%s over [%d, %d] (pushed=%s) with split size %d ms",
+                splits.size(),
+                handle.getSchemaName(),
+                handle.getTableName(),
+                startMillis,
+                endMillis,
+                handle.getPushedStartMillis().isPresent() || handle.getPushedEndMillis().isPresent(),
+                splitMillis);
         return new FixedSplitSource(splits);
     }
 
     private List<KairosdbSplit> chopTimeRange(KairosdbTableHandle handle, long startMillis, long endMillis, long splitMillis)
     {
-        if (endMillis <= startMillis) {
+        if (endMillis < startMillis) {
             return ImmutableList.of();
         }
         if (splitMillis <= 0) {
             // Defensive: configuration validation already requires split size >= 1ms.
-            splitMillis = endMillis - startMillis;
+            splitMillis = Math.max(1L, endMillis - startMillis);
         }
         ImmutableList.Builder<KairosdbSplit> builder = ImmutableList.builder();
         long cursor = startMillis;
-        while (cursor < endMillis) {
+        while (cursor <= endMillis) {
             long sliceEnd = Math.min(cursor + splitMillis, endMillis);
             builder.add(new KairosdbSplit(
                     connectorId.toString(),
@@ -80,7 +96,10 @@ public class KairosdbSplitManager
                     handle.getTableName(),
                     cursor,
                     sliceEnd));
-            cursor = sliceEnd;
+            if (sliceEnd >= endMillis) {
+                break;
+            }
+            cursor = sliceEnd + 1;
         }
         return builder.build();
     }
