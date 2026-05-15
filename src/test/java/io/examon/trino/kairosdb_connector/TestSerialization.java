@@ -3,6 +3,15 @@ package io.examon.trino.kairosdb_connector;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.json.JsonCodec;
+import io.airlift.json.JsonCodecFactory;
+import io.airlift.json.ObjectMapperProvider;
+import io.trino.plugin.base.TypeDeserializer;
+import io.trino.spi.type.BigintType;
+import io.trino.spi.type.TimestampType;
+import io.trino.spi.type.TimestampWithTimeZoneType;
+import io.trino.spi.type.Type;
+import io.trino.spi.type.TypeId;
+import io.trino.spi.type.VarcharType;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -28,6 +37,39 @@ final class TestSerialization
             JsonCodec.jsonCodec(KairosdbTableHandle.class);
     private static final JsonCodec<KairosdbSplit> SPLIT_CODEC =
             JsonCodec.jsonCodec(KairosdbSplit.class);
+
+    /**
+     * Column handles carry a Trino {@link Type} field, which only deserialises
+     * with a {@link TypeDeserializer} that can look up the type by id.  In
+     * production this is wired by Trino's {@code TypeDeserializerModule}; for
+     * tests we hand-roll a minimal lookup over the few types this connector
+     * emits.  This mirrors the codec the coordinator-worker dispatch uses
+     * for real - it has caught at least one historical regression where the
+     * handle accidentally embedded a non-JSON-friendly object.
+     */
+    private static final JsonCodec<KairosdbColumnHandle> COLUMN_HANDLE_CODEC = buildColumnHandleCodec();
+
+    private static JsonCodec<KairosdbColumnHandle> buildColumnHandleCodec()
+    {
+        ObjectMapperProvider provider = new ObjectMapperProvider();
+        provider.setJsonDeserializers(ImmutableMap.of(Type.class, new TypeDeserializer(id -> {
+            String s = id.getId();
+            if (BigintType.BIGINT.getTypeId().getId().equals(s)) {
+                return BigintType.BIGINT;
+            }
+            if (s.equals(TimestampType.TIMESTAMP_MILLIS.getTypeId().getId())) {
+                return TimestampType.TIMESTAMP_MILLIS;
+            }
+            if (s.startsWith("timestamp(") && s.contains("with time zone")) {
+                return TimestampWithTimeZoneType.createTimestampWithTimeZoneType(3);
+            }
+            if (s.startsWith("varchar")) {
+                return VarcharType.createUnboundedVarcharType();
+            }
+            throw new IllegalArgumentException("Unsupported type for test codec: " + s);
+        })));
+        return new JsonCodecFactory(provider).jsonCodec(KairosdbColumnHandle.class);
+    }
 
     @Test
     void emptyTableHandleRoundTrip()
@@ -116,5 +158,22 @@ final class TestSerialization
         assertThat(round.getTagFilters()).isEmpty();
         assertThat(round.getLimit()).isEmpty();
         assertThat(round.getAggregators()).isEmpty();
+    }
+
+    @Test
+    void columnHandleRoundTrip()
+    {
+        // Exercise every type variant the connector emits.
+        for (Type t : List.of(
+                BigintType.BIGINT,
+                TimestampType.TIMESTAMP_MILLIS,
+                TimestampWithTimeZoneType.createTimestampWithTimeZoneType(3),
+                VarcharType.createUnboundedVarcharType())) {
+            KairosdbColumnHandle original = new KairosdbColumnHandle("kdb", "host", t, 0);
+            KairosdbColumnHandle round = COLUMN_HANDLE_CODEC.fromJson(COLUMN_HANDLE_CODEC.toJson(original));
+            assertThat(round).isEqualTo(original);
+            assertThat(round.getColumnType()).isEqualTo(t);
+            assertThat(round.getOrdinalPosition()).isEqualTo(0);
+        }
     }
 }
