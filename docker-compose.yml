@@ -1,0 +1,18 @@
+services:
+  trino:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: trino-kairosdb:dev
+    ports:
+      - "8082:8080"
+    volumes:
+      - ./trino-config/catalog:/etc/trino/catalog
+    depends_on:
+      - kairosdb
+
+  kairosdb:
+    image: examonhpc/kairosdb:1.2.2
+    ports:
+      - "4242:4242"
+      - "8081:8080"

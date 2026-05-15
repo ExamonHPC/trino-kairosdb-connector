@@ -1,28 +1,21 @@
-Some helpful notes about the Prometheus connector code:
+# trino-kairosdb-connector
 
-The Prometheus server URI ending in `api/v1/label/__name__/values` is a special URI
-used to list metric names which will be table names in our mapping.
+A Trino connector for the [KairosDB](https://kairosdb.github.io/) time-series database.
 
-Since Prometheus' metric listing endpoint, above, just lists the current metrics
-we treat the returned metric names as table names with known, fixed, schema.
+> Status: work in progress (v3 series). The plugin is built as a standalone shaded JAR
+> that can be dropped into `<trino>/plugin/kairosdb/`. Full documentation will land
+> with the first feature release.
 
-The Prometheus metrics backing each table will not change and so
-the only columns need to be in the form:
-`label VARCHAR`, `value DOUBLE`, `timestamp TIMESTAMP_WITH_TIME_ZONE`
+## Build
 
-We hard code the table structure, so metadata-uri is not needed.
+```bash
+mvn -q clean package
+```
 
-Splits and thus Prometheus queries are created by choosing endTime. An
-offset is added to make sure inclusive chunks do not overlap.
+The resulting `target/kairosdb-connector-<version>.jar` is the only artifact you need
+to deploy. Unit tests run as part of `mvn package`; the integration test suite
+(against a real KairosDB container) is gated behind the `integration` Maven profile:
 
-`default` is the name of the only schema.
-
-The EffectiveLimits class handles predicate bounds:
-
-We have a 2x2 matrix of responses that govern how we integrate lower or
-upper bounds set in the predicate versus those set by the config
-properties. The EffectiveLimits inner class handles the calculations around
-the bounds setting.
-
-There are tests for all 4 possibilities of settings for the predicate
-bounds.
+```bash
+mvn -q -Pintegration verify
+```

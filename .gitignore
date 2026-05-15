@@ -1,1 +1,19 @@
-trino-*
+# external read-only reference checkouts symlinked into the workspace
+/trino-kairosdb-connector-*
+
+# Maven build output
+target/
+
+# IDE / editor metadata
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Compiled class files
+*.class
