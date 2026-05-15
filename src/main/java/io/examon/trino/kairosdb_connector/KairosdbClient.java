@@ -72,11 +72,12 @@ public class KairosdbClient
 
     private static final MediaType JSON = MediaType.get("application/json; charset=utf-8");
 
-    // The KairosDB /query/tags endpoint requires a time range.  We have no way
-    // to know in advance how far back a given metric has been written, so we
-    // probe in 30-day windows for up to ~10 years until we see at least one
-    // tag.  This same scheme has been in production for a long time and we
-    // keep the constants identical here.
+    // Tag discovery: see discoverSchema() for the full design discussion.
+    // The KairosDB /query/tags endpoint requires a time range, and there's
+    // no out-of-band way to know how far back a metric has been written, so
+    // we probe in fixed 30-day jumps for up to 120 iterations (~10 years).
+    // This is the production-validated cadence; both constants are kept
+    // identical to the long-running connector.
     private static final int TAG_LOOKBACK_WINDOW_DAYS = 30;
     private static final int TAG_LOOKBACK_MAX_WINDOWS = 120;
 
@@ -175,6 +176,68 @@ public class KairosdbClient
         }
     }
 
+    /**
+     * Discovers the tag schema of one metric by probing the KairosDB
+     * {@code /query/tags} endpoint backwards through time.
+     *
+     * <p><b>Algorithm</b> (preserved verbatim from the long-running
+     * production connector):
+     *
+     * <pre>{@code
+     *   cursor = now
+     *   repeat up to 120 times:
+     *     start = cursor - 30 days
+     *     ask KairosDB: "for metric M, what tags exist with start_absolute=start?"
+     *       (note: NO end_absolute -- KairosDB defaults end to "current time",
+     *        so each probe is an EXPANDING window anchored at now)
+     *     if any tags returned: keep them, stop.
+     *     cursor = start
+     * }</pre>
+     *
+     * The query KairosDB sees on iteration k therefore covers
+     * {@code [now - k * 30d, now]}, not a sliding 30-day slice.
+     *
+     * <p><b>Why this shape</b>: the 99.9% case is a "live" metric with at
+     * least one datapoint in the last 30 days, so the very first probe
+     * succeeds and the loop exits.  The remaining tail caters to metrics
+     * that wrote data once a long time ago and went silent (rare in
+     * practice).  "Latest window wins" is a useful semantic byproduct:
+     * because the probes start at now, any tags currently in use - even
+     * if the metric's schema has evolved over the years - are caught
+     * first.
+     *
+     * <p><b>Worst case</b>: a metric whose only datapoint is from years
+     * ago triggers many probes, each scanning more of KairosDB's index
+     * than the previous (the expanding window).  In production this
+     * has never been observed to be a problem on examon-class workloads,
+     * but it is a known property of the algorithm.
+     *
+     * <p><b>Possible future improvements</b> (annotated for the next
+     * iteration; intentionally not implemented here):
+     * <ul>
+     *   <li><i>Exponential cadence</i> instead of fixed 30-day jumps -
+     *       e.g. probe {@code 1h, 1d, 30d, 365d, 10y}.  Caps the loop at
+     *       ~5 iterations and turns "live metric tag discovery" from a
+     *       30-day index scan into a 1-hour scan (a ~720x speed-up on
+     *       the common path).  Trivial to make configurable via a
+     *       comma-separated {@code kairosdb.tag-discovery.lookback}.</li>
+     *   <li><i>Disjoint sliding windows</i> - same exponential cadence
+     *       but each probe's window is non-overlapping, capping total
+     *       worst-case scan at ~10 years.  Slightly different semantics
+     *       (loses the redundancy of always covering "now"), so deserves
+     *       its own evaluation against representative datasets.</li>
+     *   <li><i>Random-sample-then-refine</i> - probe a handful of random
+     *       short windows across the metric's lifetime.  If they all
+     *       return the same tag set, return it.  If they differ, drill
+     *       down on the boundary to surface schema evolution explicitly.
+     *       Useful when tags genuinely change over time and we care
+     *       about exposing the union vs. just the latest.</li>
+     *   <li><i>Server-side last-write hint</i> - if a future KairosDB
+     *       version exposes a per-metric "last written at" attribute,
+     *       we can target a single probe at that timestamp and skip the
+     *       loop entirely.</li>
+     * </ul>
+     */
     private MetricSchema discoverSchema(String metricName)
     {
         Set<String> tagKeys = new LinkedHashSet<>();
@@ -190,6 +253,13 @@ public class KairosdbClient
         }
 
         if (tagKeys.isEmpty()) {
+            // Two ways to land here: (a) the metric genuinely has no tags
+            // (uncommon but valid in KairosDB), or (b) the metric is older
+            // than the 10-year ceiling.  Both produce a tagless schema with
+            // just the synthetic timestamp/value columns, which is a
+            // reasonable degraded mode - the user can still SELECT, just
+            // with no tag dimension.  We log this at DEBUG because case
+            // (a) is by far the more common cause.
             log.debug("No tag keys found for metric %s after walking back %d * %d days",
                     metricName, TAG_LOOKBACK_MAX_WINDOWS, TAG_LOOKBACK_WINDOW_DAYS);
         }
