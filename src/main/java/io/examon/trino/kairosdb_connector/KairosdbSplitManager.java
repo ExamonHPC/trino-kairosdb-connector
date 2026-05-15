@@ -36,12 +36,12 @@ import static java.util.Objects.requireNonNull;
  * a slice boundary would be returned by both neighbours.  This is the same
  * fix the production connector carried for several releases.
  *
- * <p>When a {@code LIMIT N} has been pushed down, the manager emits exactly
- * <em>one</em> split covering the whole time window and carrying the limit.
- * Time-based fan-out would multiply the row count: with K splits the
- * connector could legally return up to K * N rows because each split is an
- * independent KairosDB query.  Collapsing to one split lets KairosDB enforce
- * the cap itself; Trino keeps its own LIMIT operator above us as a backstop
+ * <p>When a {@code LIMIT N} or any {@code sampling_aggregator} has been
+ * pushed down, the manager emits exactly <em>one</em> split covering the
+ * whole time window.  Time-based fan-out would multiply the row count under
+ * LIMIT (K splits, each up to N rows), and would re-bucket aggregators
+ * independently per slice; collapsing to one split delegates that work to
+ * KairosDB.  Trino keeps its own LIMIT operator above us as a backstop
  * (see KairosdbMetadata.applyLimit for {@code limitGuaranteed = false}).
  */
 public class KairosdbSplitManager
@@ -76,10 +76,17 @@ public class KairosdbSplitManager
         long splitMillis = config.getSplitSize().toMillis();
         Map<String, List<String>> tagFilters = handle.getPushedTagFilters();
         Optional<Long> limit = handle.getPushedLimit();
+        List<String> aggregators = handle.getPushedAggregators();
 
         List<KairosdbSplit> splits;
-        if (limit.isPresent()) {
-            // Single full-range split; KairosDB enforces the cap server-side.
+        if (limit.isPresent() || !aggregators.isEmpty()) {
+            // Both LIMIT and sampling aggregators must be applied to the whole
+            // window as a single KairosDB query: a time-based fan-out would
+            // either return up to K*N rows under LIMIT, or independently
+            // re-bucket each slice under aggregators (so a daily bucket asked
+            // across an N-day window would yield N independent daily buckets,
+            // not one).  Collapsing to a single split makes KairosDB do the
+            // work and matches the long-running production behaviour.
             splits = ImmutableList.of(new KairosdbSplit(
                     connectorId.toString(),
                     handle.getSchemaName(),
@@ -87,13 +94,14 @@ public class KairosdbSplitManager
                     startMillis,
                     endMillis,
                     tagFilters,
-                    limit));
+                    limit,
+                    aggregators));
         }
         else {
             splits = chopTimeRange(handle, startMillis, endMillis, splitMillis, tagFilters);
         }
 
-        log.debug("Generated %d split(s) for %s.%s over [%d, %d] (pushed=%s, tags=%s, limit=%s) with split size %d ms",
+        log.debug("Generated %d split(s) for %s.%s over [%d, %d] (pushed=%s, tags=%s, limit=%s, aggregators=%s) with split size %d ms",
                 splits.size(),
                 handle.getSchemaName(),
                 handle.getTableName(),
@@ -102,6 +110,7 @@ public class KairosdbSplitManager
                 handle.getPushedStartMillis().isPresent() || handle.getPushedEndMillis().isPresent(),
                 tagFilters,
                 limit.orElse(null),
+                aggregators,
                 splitMillis);
         return new FixedSplitSource(splits);
     }
@@ -130,7 +139,9 @@ public class KairosdbSplitManager
                     handle.getTableName(),
                     cursor,
                     sliceEnd,
-                    tagFilters));
+                    tagFilters,
+                    Optional.empty(),
+                    ImmutableList.of()));
             if (sliceEnd >= endMillis) {
                 break;
             }

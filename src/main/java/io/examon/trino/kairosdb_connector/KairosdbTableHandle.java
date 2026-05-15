@@ -18,16 +18,21 @@ import static java.util.Objects.requireNonNull;
  * Identifies the metric a query targets and carries any predicate state the
  * metadata layer has pushed down to KairosDB.
  *
- * <p>Currently pushed: timestamp range, tag filters and LIMIT.  Sampling
- * aggregators land in the next commit.  Each pushed-down piece is stored as
- * a plain JSON-serialisable primitive (no opaque builder objects) so the
- * handle round-trips cleanly between coordinator and worker.
+ * <p>Currently pushed: timestamp range, tag filters, LIMIT and sampling
+ * aggregators.  Each pushed-down piece is stored as a plain
+ * JSON-serialisable primitive (no opaque builder objects) so the handle
+ * round-trips cleanly between coordinator and worker.
  *
  * <p>Tag filters use KairosDB-side <em>original</em> tag names as keys (case
  * preserving) because that's the form KairosDB expects in the query JSON;
  * Trino-side identifiers are always lowercased and translated when the
  * filter is constructed.  Within a tag, the list of values has OR semantics
  * (matches any); across tags the semantics is AND (all tags must match).
+ *
+ * <p>Sampling aggregators are stored as the raw {@code type;interval;alignment}
+ * spec strings (already validated by {@link KairosdbSamplingConstants}) in
+ * the exact order they will be applied; the on-the-wire JSON shape is built
+ * by {@link KairosdbClient}.
  */
 public final class KairosdbTableHandle
         implements ConnectorTableHandle
@@ -39,6 +44,7 @@ public final class KairosdbTableHandle
     private final Optional<Long> pushedEndMillis;
     private final Map<String, List<String>> pushedTagFilters;
     private final Optional<Long> pushedLimit;
+    private final List<String> pushedAggregators;
 
     @JsonCreator
     public KairosdbTableHandle(
@@ -48,7 +54,8 @@ public final class KairosdbTableHandle
             @JsonProperty("pushedStartMillis") Optional<Long> pushedStartMillis,
             @JsonProperty("pushedEndMillis") Optional<Long> pushedEndMillis,
             @JsonProperty("pushedTagFilters") Map<String, List<String>> pushedTagFilters,
-            @JsonProperty("pushedLimit") Optional<Long> pushedLimit)
+            @JsonProperty("pushedLimit") Optional<Long> pushedLimit,
+            @JsonProperty("pushedAggregators") List<String> pushedAggregators)
     {
         this.connectorId = requireNonNull(connectorId, "connectorId is null");
         this.schemaName = requireNonNull(schemaName, "schemaName is null");
@@ -57,11 +64,12 @@ public final class KairosdbTableHandle
         this.pushedEndMillis = requireNonNull(pushedEndMillis, "pushedEndMillis is null");
         this.pushedTagFilters = copyImmutable(pushedTagFilters);
         this.pushedLimit = requireNonNull(pushedLimit, "pushedLimit is null");
+        this.pushedAggregators = pushedAggregators == null ? ImmutableList.of() : ImmutableList.copyOf(pushedAggregators);
     }
 
     public KairosdbTableHandle(String connectorId, String schemaName, String tableName)
     {
-        this(connectorId, schemaName, tableName, Optional.empty(), Optional.empty(), ImmutableMap.of(), Optional.empty());
+        this(connectorId, schemaName, tableName, Optional.empty(), Optional.empty(), ImmutableMap.of(), Optional.empty(), ImmutableList.of());
     }
 
     private static Map<String, List<String>> copyImmutable(Map<String, List<String>> source)
@@ -118,19 +126,30 @@ public final class KairosdbTableHandle
         return pushedLimit;
     }
 
+    @JsonProperty
+    public List<String> getPushedAggregators()
+    {
+        return pushedAggregators;
+    }
+
     public KairosdbTableHandle withTimeRange(Optional<Long> startMillis, Optional<Long> endMillis)
     {
-        return new KairosdbTableHandle(connectorId, schemaName, tableName, startMillis, endMillis, pushedTagFilters, pushedLimit);
+        return new KairosdbTableHandle(connectorId, schemaName, tableName, startMillis, endMillis, pushedTagFilters, pushedLimit, pushedAggregators);
     }
 
     public KairosdbTableHandle withTagFilters(Map<String, List<String>> tagFilters)
     {
-        return new KairosdbTableHandle(connectorId, schemaName, tableName, pushedStartMillis, pushedEndMillis, tagFilters, pushedLimit);
+        return new KairosdbTableHandle(connectorId, schemaName, tableName, pushedStartMillis, pushedEndMillis, tagFilters, pushedLimit, pushedAggregators);
     }
 
     public KairosdbTableHandle withLimit(Optional<Long> limit)
     {
-        return new KairosdbTableHandle(connectorId, schemaName, tableName, pushedStartMillis, pushedEndMillis, pushedTagFilters, limit);
+        return new KairosdbTableHandle(connectorId, schemaName, tableName, pushedStartMillis, pushedEndMillis, pushedTagFilters, limit, pushedAggregators);
+    }
+
+    public KairosdbTableHandle withAggregators(List<String> aggregators)
+    {
+        return new KairosdbTableHandle(connectorId, schemaName, tableName, pushedStartMillis, pushedEndMillis, pushedTagFilters, pushedLimit, aggregators);
     }
 
     public SchemaTableName toSchemaTableName()
@@ -141,7 +160,7 @@ public final class KairosdbTableHandle
     @Override
     public int hashCode()
     {
-        return Objects.hash(connectorId, schemaName, tableName, pushedStartMillis, pushedEndMillis, pushedTagFilters, pushedLimit);
+        return Objects.hash(connectorId, schemaName, tableName, pushedStartMillis, pushedEndMillis, pushedTagFilters, pushedLimit, pushedAggregators);
     }
 
     @Override
@@ -160,7 +179,8 @@ public final class KairosdbTableHandle
                 && Objects.equals(pushedStartMillis, other.pushedStartMillis)
                 && Objects.equals(pushedEndMillis, other.pushedEndMillis)
                 && Objects.equals(pushedTagFilters, other.pushedTagFilters)
-                && Objects.equals(pushedLimit, other.pushedLimit);
+                && Objects.equals(pushedLimit, other.pushedLimit)
+                && Objects.equals(pushedAggregators, other.pushedAggregators);
     }
 
     @Override
@@ -179,6 +199,9 @@ public final class KairosdbTableHandle
             sb.append(" tags=").append(pushedTagFilters);
         }
         pushedLimit.ifPresent(l -> sb.append(" limit=").append(l));
+        if (!pushedAggregators.isEmpty()) {
+            sb.append(" aggregators=").append(pushedAggregators);
+        }
         return sb.toString();
     }
 }

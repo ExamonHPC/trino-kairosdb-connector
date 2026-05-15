@@ -19,6 +19,7 @@ import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.type.VarcharType;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -121,16 +122,17 @@ public class KairosdbMetadata
     }
 
     /**
-     * Pushes timestamp range and tag equality / {@code IN} predicates into
-     * KairosDB.  Anything else (expressions, dynamic filters, range queries
-     * on tags) stays as "remaining" and Trino re-evaluates it above the
-     * connector.
+     * Pushes timestamp range, tag equality / {@code IN} and
+     * {@code sampling_aggregator} predicates into KairosDB.  Anything else
+     * (expressions, dynamic filters, range queries on tags) stays as
+     * "remaining" and Trino re-evaluates it above the connector.
      *
-     * <p>Both kinds of pushdown follow the production-validated convention
-     * of claiming the column as fully consumed even when the equivalent
-     * KairosDB query is technically a superset of the predicate.  In
-     * practice every observed query has been a single timestamp range plus
-     * tag equalities, so the superset case never fires.
+     * <p>All three kinds of pushdown follow the production-validated
+     * convention of claiming the column as fully consumed even when the
+     * equivalent KairosDB query is technically a superset of the predicate.
+     * In practice every observed query has been a single timestamp range
+     * plus tag equalities (plus, occasionally, sampling aggregators), so the
+     * superset case never fires.
      */
     @Override
     public Optional<ConstraintApplicationResult<ConnectorTableHandle>> applyFilter(
@@ -159,6 +161,7 @@ public class KairosdbMetadata
         Map<ColumnHandle, Domain> remaining = new HashMap<>(domains);
         Optional<KairosdbTimestampPushdown.Window> window = Optional.empty();
         LinkedHashMap<String, List<String>> tagFilters = new LinkedHashMap<>(table.getPushedTagFilters());
+        List<String> aggregators = new ArrayList<>(table.getPushedAggregators());
 
         for (Map.Entry<ColumnHandle, Domain> entry : domains.entrySet()) {
             KairosdbColumnHandle column = (KairosdbColumnHandle) entry.getKey();
@@ -169,6 +172,19 @@ public class KairosdbMetadata
                 if (window.isPresent()) {
                     remaining.remove(column);
                 }
+                continue;
+            }
+
+            if (KairosdbSamplingConstants.isSamplingColumn(columnName)) {
+                // Hidden control column: the predicate becomes one or more
+                // sampling aggregators applied to the KairosDB query.  We
+                // always claim the domain as fully pushed (whether or not we
+                // could parse anything out of it), because there's no
+                // underlying data for Trino to compare against -- leaving it
+                // as residual would force every row through a filter against
+                // a non-existent value and return zero rows.
+                aggregators = extractSamplingSpecs(entry.getValue(), aggregators);
+                remaining.remove(column);
                 continue;
             }
 
@@ -203,19 +219,24 @@ public class KairosdbMetadata
         boolean timestampUnchanged = newStart.equals(table.getPushedStartMillis())
                 && newEnd.equals(table.getPushedEndMillis());
         boolean tagsUnchanged = tagFilters.equals(table.getPushedTagFilters());
-        if (timestampUnchanged && tagsUnchanged) {
+        boolean aggregatorsUnchanged = aggregators.equals(table.getPushedAggregators());
+        if (timestampUnchanged && tagsUnchanged && aggregatorsUnchanged) {
             return Optional.empty();
         }
 
         KairosdbTableHandle pushed = table
                 .withTimeRange(newStart, newEnd)
-                .withTagFilters(tagFilters);
+                .withTagFilters(tagFilters)
+                .withAggregators(aggregators);
 
         if (window.isPresent()) {
             log.info("Pushed timestamp window %s into %s.%s", window.get().pretty(), pushed.getSchemaName(), pushed.getTableName());
         }
         if (!tagFilters.isEmpty()) {
             log.info("Pushed tag filters %s into %s.%s", tagFilters, pushed.getSchemaName(), pushed.getTableName());
+        }
+        if (!aggregators.isEmpty()) {
+            log.info("Pushed sampling aggregators %s into %s.%s", aggregators, pushed.getSchemaName(), pushed.getTableName());
         }
 
         return Optional.of(new ConstraintApplicationResult<>(
@@ -259,8 +280,7 @@ public class KairosdbMetadata
     /**
      * A column qualifies as a KairosDB tag column when it carries a VARCHAR
      * type and is not one of the synthetic {@code timestamp} / {@code value}
-     * columns.  Future commits will also exclude hidden columns such as
-     * {@code sampling_aggregator}.
+     * columns, nor the hidden {@code sampling_aggregator} control column.
      */
     private static boolean isTagColumn(KairosdbColumnHandle column)
     {
@@ -268,7 +288,71 @@ public class KairosdbMetadata
             return false;
         }
         String name = column.getColumnName();
-        return !KairosdbTimestampPushdown.isTimestampColumn(name) && !"value".equalsIgnoreCase(name);
+        return !KairosdbTimestampPushdown.isTimestampColumn(name)
+                && !"value".equalsIgnoreCase(name)
+                && !KairosdbSamplingConstants.isSamplingColumn(name);
+    }
+
+    /**
+     * Extracts and validates the chained sampling aggregator specs from a
+     * predicate on the hidden {@code sampling_aggregator} column.  KairosDB
+     * aggregators are functional composition - the output of one feeds the
+     * next - so the order matters end-to-end.
+     *
+     * <p>Two ways for the user to express a chain:
+     * <ul>
+     *   <li><b>Recommended, order-preserving:</b> equality against a single
+     *       VARCHAR value with {@code '|'} separating the individual
+     *       {@code type;interval;alignment} specs.  Example:
+     *       <pre>{@code WHERE sampling_aggregator = 'sum;1h;start_time|avg;5m;sampling'}</pre>
+     *       The chain is applied in <em>exactly</em> the order written.</li>
+     *   <li><b>Best-effort, order-unspecified:</b> {@code IN (...)} of
+     *       single-spec strings.  Trino delivers VARCHAR values out of a
+     *       {@link io.trino.spi.predicate.SortedRangeSet} in alphabetical
+     *       order, so the chain order is determined by spec text, not by
+     *       the SQL the user wrote.  We log a warning and keep going so
+     *       existing queries still run, but users who care about chain
+     *       order must switch to the {@code '|'}-separated form.</li>
+     * </ul>
+     *
+     * <p>Bad specs are dropped with a warning rather than failing the query;
+     * a single malformed entry never aborts the whole SELECT.  If
+     * <em>every</em> spec is bad, the previous aggregator list (if any) is
+     * preserved so a follow-up applyFilter call doesn't lose state.
+     */
+    private static List<String> extractSamplingSpecs(Domain domain, List<String> existing)
+    {
+        Optional<List<String>> values = KairosdbTagPushdown.extractAdmittedValues(domain);
+        if (values.isEmpty() || values.get().isEmpty()) {
+            return existing;
+        }
+        if (values.get().size() > 1) {
+            log.warn("sampling_aggregator received %d IN-list values whose chain order is " +
+                    "alphabetical, not source-written; for deterministic order use " +
+                    "sampling_aggregator = '<spec>|<spec>|...' instead.  Got: %s",
+                    values.get().size(), values.get());
+        }
+        List<String> validated = new ArrayList<>();
+        for (String value : values.get()) {
+            // Each value may itself encode a '|'-separated chain.  Split,
+            // trim, and validate each segment.  Order within a value is
+            // preserved verbatim because that is the only knob the user
+            // has to control chain order.
+            for (String segment : value.split("\\|")) {
+                String spec = segment.trim();
+                if (spec.isEmpty()) {
+                    continue;
+                }
+                try {
+                    KairosdbSamplingConstants.parse(spec);
+                    validated.add(spec);
+                }
+                catch (IllegalArgumentException ex) {
+                    log.warn("Dropping invalid sampling_aggregator spec '%s': %s", spec, ex.getMessage());
+                }
+            }
+        }
+        return validated.isEmpty() ? existing : validated;
     }
 
     private static boolean isInternalMetric(String metricName)

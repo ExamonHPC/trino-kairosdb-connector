@@ -17,9 +17,9 @@ import static java.util.Objects.requireNonNull;
  * One slice of a metric query, sized to {@code kairosdb.split-size}.
  *
  * <p>The slice's inclusive {@code [startMillis, endMillis]} window and any
- * pushed-down tag filters are closed at the coordinator (in the split
- * manager) and shipped to whichever worker Trino picks.  KairosDB is
- * reachable from every Trino worker, so we expose no host preferences
+ * pushed-down tag filters / aggregators are closed at the coordinator (in
+ * the split manager) and shipped to whichever worker Trino picks.  KairosDB
+ * is reachable from every Trino worker, so we expose no host preferences
  * ({@link #getAddresses()} is empty) and Trino is free to schedule us
  * anywhere.
  */
@@ -33,6 +33,7 @@ public final class KairosdbSplit
     private final long endMillis;
     private final Map<String, List<String>> tagFilters;
     private final Optional<Long> limit;
+    private final List<String> aggregators;
 
     @JsonCreator
     public KairosdbSplit(
@@ -42,7 +43,8 @@ public final class KairosdbSplit
             @JsonProperty("startMillis") long startMillis,
             @JsonProperty("endMillis") long endMillis,
             @JsonProperty("tagFilters") Map<String, List<String>> tagFilters,
-            @JsonProperty("limit") Optional<Long> limit)
+            @JsonProperty("limit") Optional<Long> limit,
+            @JsonProperty("aggregators") List<String> aggregators)
     {
         this.connectorId = requireNonNull(connectorId, "connectorId is null");
         this.schemaName = requireNonNull(schemaName, "schemaName is null");
@@ -51,22 +53,7 @@ public final class KairosdbSplit
         this.endMillis = endMillis;
         this.tagFilters = copyImmutable(tagFilters);
         this.limit = requireNonNull(limit, "limit is null");
-    }
-
-    public KairosdbSplit(String connectorId, String schemaName, String tableName, long startMillis, long endMillis)
-    {
-        this(connectorId, schemaName, tableName, startMillis, endMillis, ImmutableMap.of(), Optional.empty());
-    }
-
-    public KairosdbSplit(
-            String connectorId,
-            String schemaName,
-            String tableName,
-            long startMillis,
-            long endMillis,
-            Map<String, List<String>> tagFilters)
-    {
-        this(connectorId, schemaName, tableName, startMillis, endMillis, tagFilters, Optional.empty());
+        this.aggregators = aggregators == null ? ImmutableList.of() : ImmutableList.copyOf(aggregators);
     }
 
     private static Map<String, List<String>> copyImmutable(Map<String, List<String>> source)
@@ -123,6 +110,12 @@ public final class KairosdbSplit
         return limit;
     }
 
+    @JsonProperty
+    public List<String> getAggregators()
+    {
+        return aggregators;
+    }
+
     @Override
     public List<HostAddress> getAddresses()
     {
@@ -139,6 +132,9 @@ public final class KairosdbSplit
             sb.append(' ').append(tagFilters);
         }
         limit.ifPresent(l -> sb.append(" limit=").append(l));
+        if (!aggregators.isEmpty()) {
+            sb.append(" aggregators=").append(aggregators);
+        }
         return sb.append('}').toString();
     }
 }

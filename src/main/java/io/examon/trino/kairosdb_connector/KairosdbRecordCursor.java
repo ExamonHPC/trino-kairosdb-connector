@@ -120,7 +120,8 @@ public class KairosdbRecordCursor
                 split.getStartMillis(),
                 split.getEndMillis(),
                 split.getTagFilters(),
-                split.getLimit());
+                split.getLimit(),
+                split.getAggregators());
         this.resultIterator = results.iterator();
     }
 

@@ -223,6 +223,21 @@ public class KairosdbClient
         columns.add(new ColumnMetadata("timestamp", timestampColumnType()));
         columns.add(new ColumnMetadata("value", VarcharType.createUnboundedVarcharType()));
 
+        // The sampling_aggregator hidden column is a control channel: users
+        // push KairosDB sampling aggregators by writing predicates on it
+        // (WHERE sampling_aggregator = 'sum;1h;start_time' or IN-lists of
+        // such specs).  It has no underlying data, never appears in
+        // SELECT *, and is dropped from the query's projection list by the
+        // setHidden flag.  KairosdbMetadata.applyFilter recognises the
+        // predicate, validates each spec, and stashes the list on the
+        // table handle for the worker side to translate into a JSON
+        // aggregators block.
+        columns.add(ColumnMetadata.builder()
+                .setName(KairosdbSamplingConstants.SAMPLING_AGGREGATOR)
+                .setType(VarcharType.createUnboundedVarcharType())
+                .setHidden(true)
+                .build());
+
         return new MetricSchema(ImmutableList.copyOf(tagKeys), columns.build());
     }
 
@@ -342,13 +357,21 @@ public class KairosdbClient
      * rows if the underlying data is sparser than {@code limit}, and Trino
      * keeps its own LIMIT operator above the connector for that reason
      * (see {@code applyLimit}).
+     *
+     * <p>{@code aggregators} is the ordered list of {@code type;interval;alignment}
+     * specs sourced from the hidden {@code sampling_aggregator} column.  Each
+     * spec is re-parsed and serialised into a KairosDB aggregator JSON
+     * object; an entry that has somehow survived but cannot be re-parsed is
+     * logged and skipped rather than failing the whole query, matching the
+     * lenient behaviour of the production connector.
      */
     public List<QueryDatapointsResponse.DataResult> queryDatapoints(
             String metricName,
             long startMillis,
             long endMillis,
             Map<String, List<String>> tagFilters,
-            Optional<Long> limit)
+            Optional<Long> limit,
+            List<String> aggregators)
     {
         List<String> tagKeys = getOriginalTagKeys(metricName);
 
@@ -358,6 +381,10 @@ public class KairosdbClient
             metric.put("tags", tagFilters);
         }
         limit.ifPresent(l -> metric.put("limit", l));
+        List<Map<String, Object>> aggregatorJson = buildAggregatorJson(aggregators);
+        if (!aggregatorJson.isEmpty()) {
+            metric.put("aggregators", aggregatorJson);
+        }
         if (!tagKeys.isEmpty()) {
             metric.put("group_by", List.of(Map.of(
                     "name", "tag",
@@ -369,8 +396,8 @@ public class KairosdbClient
                 "end_absolute", endMillis,
                 "metrics", List.of(metric));
 
-        log.debug("Querying KairosDB: metric=%s window=[%d,%d] tags=%s limit=%s group_by=%s",
-                metricName, startMillis, endMillis, tagFilters, limit.orElse(null), tagKeys);
+        log.debug("Querying KairosDB: metric=%s window=[%d,%d] tags=%s limit=%s aggregators=%s group_by=%s",
+                metricName, startMillis, endMillis, tagFilters, limit.orElse(null), aggregators, tagKeys);
 
         HttpUrl url = baseUrl.newBuilder().addPathSegments(QUERY_PATH).build();
         String json;
@@ -410,6 +437,55 @@ public class KairosdbClient
             throw new TrinoException(KAIROSDB_METRICS_RETRIEVE_ERROR,
                     "Error communicating with KairosDB at " + baseUrl, e);
         }
+    }
+
+    /**
+     * Translates already-validated {@code type;interval;alignment} specs into
+     * the JSON aggregator objects KairosDB expects:
+     *
+     * <pre>{@code
+     * { "name": "sum",
+     *   "sampling": {"value": 1, "unit": "hours"},
+     *   "align_start_time": true }
+     * }</pre>
+     *
+     * <p>Re-parsing here (rather than carrying parsed POJOs through the
+     * handle/split) keeps the serialised form a stable list-of-strings.  A
+     * spec that fails to re-parse is dropped with a warning rather than
+     * failing the query: this mirrors the production behaviour and is the
+     * only sane response given that the same spec passed validation in the
+     * coordinator earlier.
+     */
+    private static List<Map<String, Object>> buildAggregatorJson(List<String> specs)
+    {
+        if (specs == null || specs.isEmpty()) {
+            return ImmutableList.of();
+        }
+        ImmutableList.Builder<Map<String, Object>> out = ImmutableList.builder();
+        for (String spec : specs) {
+            KairosdbSamplingConstants.ParsedAggregator parsed;
+            try {
+                parsed = KairosdbSamplingConstants.parse(spec);
+            }
+            catch (IllegalArgumentException ex) {
+                log.warn("Dropping unparseable sampling aggregator spec '%s': %s", spec, ex.getMessage());
+                continue;
+            }
+            LinkedHashMap<String, Object> agg = new LinkedHashMap<>();
+            agg.put("name", parsed.type());
+            agg.put("sampling", Map.of(
+                    "value", parsed.interval().value(),
+                    "unit", parsed.interval().unit().jsonValue()));
+            switch (parsed.alignment()) {
+                case "start_time" -> agg.put("align_start_time", true);
+                case "end_time" -> agg.put("align_end_time", true);
+                case "sampling" -> agg.put("align_sampling", true);
+                case "none" -> { /* no alignment flag */ }
+                default -> { /* parse() already validated, defensive only */ }
+            }
+            out.add(agg);
+        }
+        return out.build();
     }
 
     private static HttpUrl httpUrlFromUri(URI uri)
