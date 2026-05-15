@@ -141,8 +141,13 @@ public class KairosdbMetadata
             return Optional.empty();
         }
 
-        // Build a lowercase Trino name -> original KairosDB tag name index
-        // up front: the schema cache already knows the original-case keys.
+        // Trino lowercases every column identifier before handing it to
+        // the connector (see KairosdbClient.discoverSchema for the
+        // upstream-tracked rationale).  KairosDB on the other hand is
+        // case-sensitive and stores tag names verbatim, so we keep an
+        // index that maps the lowercase Trino-side name back to the
+        // KairosDB-side original-case name and use that translation when
+        // building the tag-filter map.
         List<String> originalTagKeys = client.getOriginalTagKeys(table.getTableName());
         Map<String, String> originalByLower = new HashMap<>();
         for (String original : originalTagKeys) {

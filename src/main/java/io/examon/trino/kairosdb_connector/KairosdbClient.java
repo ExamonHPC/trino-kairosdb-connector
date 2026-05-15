@@ -194,13 +194,28 @@ public class KairosdbClient
                     metricName, TAG_LOOKBACK_MAX_WINDOWS, TAG_LOOKBACK_WINDOW_DAYS);
         }
 
-        // Trino always normalises identifiers to lowercase before matching
-        // them against connector-side column maps (verified against Trino 476:
-        // both `SELECT "DataCenter"` and `SELECT datacenter` route to the
-        // same internal `datacenter` column).  We therefore lowercase tag
-        // names here too, so what we register is what the user can write.
-        // The original case is preserved in originalTagKeys so we can still
-        // address KairosDB correctly when grouping and pushing predicates.
+        // Trino's SPI forces every ColumnMetadata name to lowercase: the
+        // ColumnMetadata constructor silently lowercases what you pass it
+        // (verified empirically against 476, and tracked upstream by
+        // https://github.com/trinodb/trino/issues/17 -- open since 2019).
+        // We therefore cannot expose KairosDB's mixed-case tag names
+        // (e.g. "DataCenter") through Trino's data dictionary.
+        //
+        // The "raw case parity" policy applies as far as Trino's SPI
+        // permits:
+        //   - the table name keeps its KairosDB case end-to-end (see
+        //     resolveTableName), which Trino allows;
+        //   - tag *values* are user data and Trino never normalises them,
+        //     so they stay case-sensitive (WHERE tag = 'East' really
+        //     matches 'East' and not 'east');
+        //   - tag *names* are SQL identifiers and get lowercased: the
+        //     metric's KairosDB-side names are preserved separately in
+        //     originalTagKeys so the connector can address KairosDB
+        //     correctly when grouping, pushing predicates, and reading
+        //     tag values back out of responses.
+        //
+        // The two synthetic columns ("timestamp", "value") are introduced
+        // by the connector itself and are intentionally lowercase.
         ImmutableList.Builder<ColumnMetadata> columns = ImmutableList.builder();
         for (String tag : tagKeys) {
             columns.add(new ColumnMetadata(tag.toLowerCase(Locale.ROOT), VarcharType.createUnboundedVarcharType()));

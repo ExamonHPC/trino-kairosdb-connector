@@ -136,16 +136,30 @@ public class KairosdbConfig
     }
 
     /**
-     * Controls how Trino-side identifiers are mapped to KairosDB's
-     * case-sensitive name space (table names today; tag names when predicate
-     * pushdown lands).  Trino itself always lowercases unquoted identifiers,
-     * so this is the only meaningful knob: when true (default) the connector
-     * tries an exact-case lookup against KairosDB first and falls back to a
-     * case-insensitive match; when false only an exact-case match is
-     * accepted.
+     * Controls table-name resolution when Trino's parser hands the connector
+     * a lowercased identifier (the usual case for unquoted SQL).  KairosDB
+     * is case-sensitive; Trino's SPI is not (see
+     * https://github.com/trinodb/trino/issues/17), so the two sides have to
+     * be reconciled somewhere.
+     *
+     * <p>When true (default) the connector first looks for an exact-case
+     * match against the KairosDB-side metric list and, failing that, falls
+     * back to a case-insensitive match.  This matches the long-running
+     * production behaviour: both {@code SELECT * FROM "MyMetric"} and
+     * {@code SELECT * FROM mymetric} resolve to the KairosDB metric named
+     * {@code MyMetric}.
+     *
+     * <p>When false only exact-case matches are accepted, which makes
+     * sense if two metrics differ only in case (rare) or for a stricter
+     * SQL-standard catalog experience.
+     *
+     * <p>Column (tag) names are <em>not</em> affected by this flag: Trino's
+     * SPI forces them to lowercase unconditionally.  The connector always
+     * keeps the KairosDB-side original case internally so the data sent to
+     * and parsed from KairosDB is always faithful.
      */
     @Config("kairosdb.case-insensitive-name-matching")
-    @ConfigDescription("Resolve table (and, in a follow-up, tag) names case-insensitively after first trying exact-case match")
+    @ConfigDescription("Resolve table names case-insensitively after first trying exact-case match")
     public KairosdbConfig setCaseInsensitiveNameMatching(boolean caseInsensitiveNameMatching)
     {
         this.caseInsensitiveNameMatching = caseInsensitiveNameMatching;
