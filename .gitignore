@@ -4,6 +4,9 @@
 # Maven build output
 target/
 
+# Plugin staging dir bind-mounted into the dev-loop trino container
+plugin/
+
 # IDE / editor metadata
 .idea/
 .vscode/

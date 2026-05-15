@@ -1,12 +1,16 @@
 services:
+  # Dev-loop trino: stock image, plugin and catalog bind-mounted from the host.
+  # Iterate with:
+  #     scripts/package.sh             # rebuild the jar via the maven builder image
+  #     docker compose restart trino   # ~5s; picks up the new jar
+  # (For a fully self-contained production image, build the project Dockerfile
+  # with `docker build .` instead.)
   trino:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: trino-kairosdb:dev
+    image: trinodb/trino:476
     ports:
       - "8082:8080"
     volumes:
+      - ./plugin/kairosdb:/usr/lib/trino/plugin/kairosdb
       - ./trino-config/catalog:/etc/trino/catalog
     depends_on:
       - kairosdb
