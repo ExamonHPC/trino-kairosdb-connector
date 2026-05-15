@@ -30,6 +30,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -167,11 +168,20 @@ public class KairosdbClient
                     metricName, TAG_LOOKBACK_MAX_WINDOWS, TAG_LOOKBACK_WINDOW_DAYS);
         }
 
+        // Trino always normalises identifiers to lowercase before matching
+        // them against connector-side column maps (verified against Trino 476:
+        // both `SELECT "DataCenter"` and `SELECT datacenter` route to the
+        // same internal `datacenter` column).  We therefore lowercase tag
+        // names here too, so what we register is what the user can write.
+        // The original case is irrelevant for column identity and will be
+        // recovered, when needed for predicate pushdown, via the
+        // case-insensitive lookup configured by
+        // kairosdb.case-insensitive-name-matching.
         ImmutableList.Builder<ColumnMetadata> columns = ImmutableList.builder();
         for (String tag : tagKeys) {
-            columns.add(new ColumnMetadata(tag, VarcharType.createUnboundedVarcharType()));
+            columns.add(new ColumnMetadata(tag.toLowerCase(Locale.ROOT), VarcharType.createUnboundedVarcharType()));
         }
-        columns.add(new ColumnMetadata("timeStamp", timestampColumnType()));
+        columns.add(new ColumnMetadata("timestamp", timestampColumnType()));
         columns.add(new ColumnMetadata("value", VarcharType.createUnboundedVarcharType()));
         return columns.build();
     }

@@ -135,8 +135,17 @@ public class KairosdbConfig
         return caseInsensitiveNameMatching;
     }
 
+    /**
+     * Controls how Trino-side identifiers are mapped to KairosDB's
+     * case-sensitive name space (table names today; tag names when predicate
+     * pushdown lands).  Trino itself always lowercases unquoted identifiers,
+     * so this is the only meaningful knob: when true (default) the connector
+     * tries an exact-case lookup against KairosDB first and falls back to a
+     * case-insensitive match; when false only an exact-case match is
+     * accepted.
+     */
     @Config("kairosdb.case-insensitive-name-matching")
-    @ConfigDescription("Match table names case-insensitively, after first trying an exact-case match (Trino SQL standard)")
+    @ConfigDescription("Resolve table (and, in a follow-up, tag) names case-insensitively after first trying exact-case match")
     public KairosdbConfig setCaseInsensitiveNameMatching(boolean caseInsensitiveNameMatching)
     {
         this.caseInsensitiveNameMatching = caseInsensitiveNameMatching;
