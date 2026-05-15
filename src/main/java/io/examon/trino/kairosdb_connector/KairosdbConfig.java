@@ -78,7 +78,7 @@ public class KairosdbConfig
 
     @Config("kairosdb.timestamp.format")
     @LegacyConfig("timestamp.format")
-    @ConfigDescription("Type used for the timeStamp column: BIGINT (epoch ms), TIMESTAMP_MILLIS, or TIMESTAMP_TZ")
+    @ConfigDescription("SQL type used for the synthetic timestamp column: BIGINT (epoch ms), TIMESTAMP_MILLIS (no zone, millisecond precision), or TIMESTAMP_TZ (TIMESTAMP(3) WITH TIME ZONE in UTC)")
     public KairosdbConfig setTimestampFormat(TimestampFormat timestampFormat)
     {
         this.timestampFormat = timestampFormat;
