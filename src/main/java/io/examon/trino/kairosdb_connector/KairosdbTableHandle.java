@@ -33,6 +33,16 @@ import static java.util.Objects.requireNonNull;
  * spec strings (already validated by {@link KairosdbSamplingConstants}) in
  * the exact order they will be applied; the on-the-wire JSON shape is built
  * by {@link KairosdbClient}.
+ *
+ * <p><b>Two names per metric.</b> {@code tableName} is always the
+ * case-preserving KairosDB metric name (used in HTTP requests); when the
+ * metric is part of a case-collision group, {@code trinoTableName} carries
+ * the connector's hash-mangled Trino-side identifier.  See
+ * {@link KairosdbMetricView}.  When there is no collision the two names
+ * coincide after lowercasing and {@code trinoTableName} is empty.
+ * {@link #toSchemaTableName()} prefers {@code trinoTableName} when present
+ * so that {@code SHOW TABLES} / {@code DESCRIBE} agree with what the user
+ * typed.
  */
 public final class KairosdbTableHandle
         implements ConnectorTableHandle
@@ -40,6 +50,7 @@ public final class KairosdbTableHandle
     private final String connectorId;
     private final String schemaName;
     private final String tableName;
+    private final Optional<String> trinoTableName;
     private final Optional<Long> pushedStartMillis;
     private final Optional<Long> pushedEndMillis;
     private final Map<String, List<String>> pushedTagFilters;
@@ -51,6 +62,7 @@ public final class KairosdbTableHandle
             @JsonProperty("connectorId") String connectorId,
             @JsonProperty("schemaName") String schemaName,
             @JsonProperty("tableName") String tableName,
+            @JsonProperty("trinoTableName") Optional<String> trinoTableName,
             @JsonProperty("pushedStartMillis") Optional<Long> pushedStartMillis,
             @JsonProperty("pushedEndMillis") Optional<Long> pushedEndMillis,
             @JsonProperty("pushedTagFilters") Map<String, List<String>> pushedTagFilters,
@@ -60,6 +72,7 @@ public final class KairosdbTableHandle
         this.connectorId = requireNonNull(connectorId, "connectorId is null");
         this.schemaName = requireNonNull(schemaName, "schemaName is null");
         this.tableName = requireNonNull(tableName, "tableName is null");
+        this.trinoTableName = trinoTableName == null ? Optional.empty() : trinoTableName;
         this.pushedStartMillis = requireNonNull(pushedStartMillis, "pushedStartMillis is null");
         this.pushedEndMillis = requireNonNull(pushedEndMillis, "pushedEndMillis is null");
         this.pushedTagFilters = copyImmutable(pushedTagFilters);
@@ -69,7 +82,12 @@ public final class KairosdbTableHandle
 
     public KairosdbTableHandle(String connectorId, String schemaName, String tableName)
     {
-        this(connectorId, schemaName, tableName, Optional.empty(), Optional.empty(), ImmutableMap.of(), Optional.empty(), ImmutableList.of());
+        this(connectorId, schemaName, tableName, Optional.empty(), Optional.empty(), Optional.empty(), ImmutableMap.of(), Optional.empty(), ImmutableList.of());
+    }
+
+    public KairosdbTableHandle(String connectorId, String schemaName, String tableName, Optional<String> trinoTableName)
+    {
+        this(connectorId, schemaName, tableName, trinoTableName, Optional.empty(), Optional.empty(), ImmutableMap.of(), Optional.empty(), ImmutableList.of());
     }
 
     private static Map<String, List<String>> copyImmutable(Map<String, List<String>> source)
@@ -100,6 +118,12 @@ public final class KairosdbTableHandle
     public String getTableName()
     {
         return tableName;
+    }
+
+    @JsonProperty
+    public Optional<String> getTrinoTableName()
+    {
+        return trinoTableName;
     }
 
     @JsonProperty
@@ -134,33 +158,40 @@ public final class KairosdbTableHandle
 
     public KairosdbTableHandle withTimeRange(Optional<Long> startMillis, Optional<Long> endMillis)
     {
-        return new KairosdbTableHandle(connectorId, schemaName, tableName, startMillis, endMillis, pushedTagFilters, pushedLimit, pushedAggregators);
+        return new KairosdbTableHandle(connectorId, schemaName, tableName, trinoTableName, startMillis, endMillis, pushedTagFilters, pushedLimit, pushedAggregators);
     }
 
     public KairosdbTableHandle withTagFilters(Map<String, List<String>> tagFilters)
     {
-        return new KairosdbTableHandle(connectorId, schemaName, tableName, pushedStartMillis, pushedEndMillis, tagFilters, pushedLimit, pushedAggregators);
+        return new KairosdbTableHandle(connectorId, schemaName, tableName, trinoTableName, pushedStartMillis, pushedEndMillis, tagFilters, pushedLimit, pushedAggregators);
     }
 
     public KairosdbTableHandle withLimit(Optional<Long> limit)
     {
-        return new KairosdbTableHandle(connectorId, schemaName, tableName, pushedStartMillis, pushedEndMillis, pushedTagFilters, limit, pushedAggregators);
+        return new KairosdbTableHandle(connectorId, schemaName, tableName, trinoTableName, pushedStartMillis, pushedEndMillis, pushedTagFilters, limit, pushedAggregators);
     }
 
     public KairosdbTableHandle withAggregators(List<String> aggregators)
     {
-        return new KairosdbTableHandle(connectorId, schemaName, tableName, pushedStartMillis, pushedEndMillis, pushedTagFilters, pushedLimit, aggregators);
+        return new KairosdbTableHandle(connectorId, schemaName, tableName, trinoTableName, pushedStartMillis, pushedEndMillis, pushedTagFilters, pushedLimit, aggregators);
     }
 
+    /**
+     * SchemaTableName matching the SQL identifier the user typed.  Prefers
+     * the Trino-side mangled name (when present); otherwise uses the
+     * KairosDB original (which {@link SchemaTableName} will lowercase
+     * itself).  Must match what {@link KairosdbClient#listMetricNames()}
+     * exposes so {@code SHOW TABLES} / {@code DESCRIBE} stay consistent.
+     */
     public SchemaTableName toSchemaTableName()
     {
-        return new SchemaTableName(schemaName, tableName);
+        return new SchemaTableName(schemaName, trinoTableName.orElse(tableName));
     }
 
     @Override
     public int hashCode()
     {
-        return Objects.hash(connectorId, schemaName, tableName, pushedStartMillis, pushedEndMillis, pushedTagFilters, pushedLimit, pushedAggregators);
+        return Objects.hash(connectorId, schemaName, tableName, trinoTableName, pushedStartMillis, pushedEndMillis, pushedTagFilters, pushedLimit, pushedAggregators);
     }
 
     @Override
@@ -176,6 +207,7 @@ public final class KairosdbTableHandle
         return Objects.equals(connectorId, other.connectorId)
                 && Objects.equals(schemaName, other.schemaName)
                 && Objects.equals(tableName, other.tableName)
+                && Objects.equals(trinoTableName, other.trinoTableName)
                 && Objects.equals(pushedStartMillis, other.pushedStartMillis)
                 && Objects.equals(pushedEndMillis, other.pushedEndMillis)
                 && Objects.equals(pushedTagFilters, other.pushedTagFilters)
@@ -188,6 +220,7 @@ public final class KairosdbTableHandle
     {
         StringBuilder sb = new StringBuilder()
                 .append(connectorId).append(':').append(schemaName).append(':').append(tableName);
+        trinoTableName.ifPresent(t -> sb.append("(as ").append(t).append(')'));
         if (pushedStartMillis.isPresent() || pushedEndMillis.isPresent()) {
             sb.append(" time=[")
                     .append(pushedStartMillis.map(String::valueOf).orElse("-"))

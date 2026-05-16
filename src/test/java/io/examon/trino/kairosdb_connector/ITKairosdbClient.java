@@ -50,8 +50,17 @@ final class ITKairosdbClient
     // finds the metric on its very first probe.
     private static final long BASE_MILLIS = System.currentTimeMillis() - 60_000L;
     private static final String METRIC_LOAD = "sys.load";
-    // A second, mixed-case metric to verify we preserve casing.
+    // A second, mixed-case metric to verify we preserve casing on the
+    // wire and lowercase the SQL identifier.
     private static final String METRIC_MEM = "Sys.Mem";
+    // A case-collision pair: the connector must expose BOTH under hash-
+    // mangled Trino-side names rather than letting Trino's lowercasing
+    // silently shadow one with the other.  Three variants exercise the
+    // grouping logic in the unit test; two variants are enough at the
+    // integration layer to verify the round-trip from KairosDB through
+    // the client.
+    private static final String METRIC_COLLIDE_LOWER = "pue";
+    private static final String METRIC_COLLIDE_UPPER = "Pue";
 
     private static GenericContainer<?> kairos;
     private static KairosdbClient client;
@@ -114,26 +123,84 @@ final class ITKairosdbClient
     }
 
     @Test
-    void listsBothMetricsCasePreserving()
+    void listMetricNamesReturnsTrinoSideLowercaseAndMangledCollisions()
     {
         List<String> names = client.listMetricNames();
-        // KairosDB may surface internal bookkeeping metrics; we only assert
-        // ours are present in their original casing.
-        assertThat(names).contains(METRIC_LOAD, METRIC_MEM);
+        // Singletons appear as their lowercase form (Trino-side).
+        assertThat(names).contains(METRIC_LOAD, "sys.mem");
+
+        // Collision group: BOTH variants must appear, each as a distinct
+        // mangled name.  Neither the unmangled "pue" nor the mixed-case
+        // "Pue" should leak through directly.
+        String mangledLower = "pue__" + KairosdbMetricView.hashSuffix(METRIC_COLLIDE_LOWER);
+        String mangledUpper = "pue__" + KairosdbMetricView.hashSuffix(METRIC_COLLIDE_UPPER);
+        assertThat(names).contains(mangledLower, mangledUpper);
+        assertThat(names).doesNotContain("pue");
     }
 
     @Test
-    void resolveTableNamePrefersExactCaseThenFallsBackInsensitively()
+    void resolveTableNameMapsTrinoSideIdentifiersToKairosOriginals()
     {
-        // The connector's documented default is to try exact-case first and
-        // then fall back to case-insensitive matching (the long-running
-        // production behaviour, configurable via
-        // kairosdb.case-insensitive-name-matching).  Both queries below
-        // therefore resolve to the original casing recorded by KairosDB.
+        // Singleton: lowercase form wins, returns the KairosDB original.
         assertThat(client.resolveTableName(METRIC_LOAD)).contains(METRIC_LOAD);
-        assertThat(client.resolveTableName(METRIC_MEM)).contains(METRIC_MEM);
         assertThat(client.resolveTableName("sys.mem")).contains(METRIC_MEM);
+
+        // Collision group: only the mangled forms resolve; the bare
+        // lowercase form does NOT, which is how the user gets a clean
+        // "table not found" instead of silent wrong data.
+        String mangledLower = "pue__" + KairosdbMetricView.hashSuffix(METRIC_COLLIDE_LOWER);
+        String mangledUpper = "pue__" + KairosdbMetricView.hashSuffix(METRIC_COLLIDE_UPPER);
+        assertThat(client.resolveTableName(mangledLower)).contains(METRIC_COLLIDE_LOWER);
+        assertThat(client.resolveTableName(mangledUpper)).contains(METRIC_COLLIDE_UPPER);
+        assertThat(client.resolveTableName("pue")).isEmpty();
+
+        // Unrelated.
         assertThat(client.resolveTableName("does.not.exist")).isEmpty();
+    }
+
+    @Test
+    void mangledMetricsCarryDescriptiveTableComment()
+    {
+        // The comment is what surfaces the original case via
+        // SHOW CREATE TABLE / system.metadata.table_comments, so it has
+        // to mention the original name verbatim and only fire for
+        // collision-group members.
+        assertThat(client.getTableComment(METRIC_LOAD)).isEmpty();
+        assertThat(client.getTableComment(METRIC_MEM)).isEmpty();
+        assertThat(client.getTableComment(METRIC_COLLIDE_LOWER))
+                .hasValueSatisfying(s -> assertThat(s).contains("\"" + METRIC_COLLIDE_LOWER + "\""));
+        assertThat(client.getTableComment(METRIC_COLLIDE_UPPER))
+                .hasValueSatisfying(s -> assertThat(s).contains("\"" + METRIC_COLLIDE_UPPER + "\""));
+    }
+
+    @Test
+    void caseCollidedMetricsReturnTheirOwnDistinctData()
+    {
+        // The whole point of the rule: each mangled SQL identifier
+        // addresses exactly one underlying KairosDB metric and never
+        // accidentally returns rows from its case-twin.  Pue has 1
+        // datapoint; pue has 2.  If the connector ever conflated them the
+        // counts below would not match.
+        List<KairosdbResponses.QueryDatapointsResponse.DataResult> lowerResults = client.queryDatapoints(
+                METRIC_COLLIDE_LOWER,
+                BASE_MILLIS - 1,
+                BASE_MILLIS + 1_000_000,
+                Map.of(),
+                Optional.empty(),
+                List.of());
+        int lowerCount = lowerResults.stream().mapToInt(r -> r.values.size()).sum();
+
+        List<KairosdbResponses.QueryDatapointsResponse.DataResult> upperResults = client.queryDatapoints(
+                METRIC_COLLIDE_UPPER,
+                BASE_MILLIS - 1,
+                BASE_MILLIS + 1_000_000,
+                Map.of(),
+                Optional.empty(),
+                List.of());
+        int upperCount = upperResults.stream().mapToInt(r -> r.values.size()).sum();
+
+        assertThat(lowerCount).isEqualTo(2);
+        assertThat(upperCount).isEqualTo(1);
     }
 
     @Test
@@ -260,6 +327,8 @@ final class ITKairosdbClient
      *   sys.load  host=h1 zone=us-east  t,   t+10s, t+20s   ->  1.0, 2.5, 3.7
      *   sys.load  host=h2 zone=us-east  t,         t+20s    ->  5.0,      6.0
      *   Sys.Mem   host=h1               t                   ->  42
+     *   pue       host=h1               t,   t+10s          ->  1.0, 2.0   (case-collision: 2 datapoints)
+     *   Pue       host=h1               t                   ->  9.0        (case-collision: 1 datapoint)
      * </pre>
      */
     private static void seedDatapoints(URI baseUri) throws Exception
@@ -282,7 +351,18 @@ final class ITKairosdbClient
                         "name", METRIC_MEM,
                         "tags", Map.of("host", "h1"),
                         "datapoints", List.of(
-                                List.of(BASE_MILLIS, 42))));
+                                List.of(BASE_MILLIS, 42))),
+                Map.of(
+                        "name", METRIC_COLLIDE_LOWER,
+                        "tags", Map.of("host", "h1"),
+                        "datapoints", List.of(
+                                List.of(BASE_MILLIS, 1.0),
+                                List.of(BASE_MILLIS + 10_000, 2.0))),
+                Map.of(
+                        "name", METRIC_COLLIDE_UPPER,
+                        "tags", Map.of("host", "h1"),
+                        "datapoints", List.of(
+                                List.of(BASE_MILLIS, 9.0))));
 
         String body = JSON.writeValueAsString(payload);
         Request request = new Request.Builder()
@@ -298,7 +378,9 @@ final class ITKairosdbClient
 
         // KairosDB returns 204 No Content as soon as the points are queued.
         // They become queryable a tick later; poll briefly so the metadata
-        // probes below find them deterministically.
+        // probes below find them deterministically.  We wait until both
+        // the singletons AND the colliding pair are visible so the
+        // collision tests don't race the listing.
         long deadline = System.currentTimeMillis() + 30_000;
         while (System.currentTimeMillis() < deadline) {
             Request listing = new Request.Builder()
@@ -307,7 +389,10 @@ final class ITKairosdbClient
                     .build();
             try (Response response = http.newCall(listing).execute()) {
                 String text = response.body() != null ? response.body().string() : "";
-                if (text.contains(METRIC_LOAD) && text.contains(METRIC_MEM)) {
+                if (text.contains(METRIC_LOAD)
+                        && text.contains(METRIC_MEM)
+                        && text.contains(METRIC_COLLIDE_LOWER)
+                        && text.contains(METRIC_COLLIDE_UPPER)) {
                     return;
                 }
             }

@@ -70,11 +70,34 @@ public class KairosdbMetadata
         if (!KairosdbNameSpace.SCHEMA.equals(tableName.getSchemaName())) {
             return null;
         }
+        // tableName.getTableName() is the Trino-side identifier; for
+        // collision-group members it's already the mangled form.  The
+        // mangled prefix happens to be a normal lowercase metric name
+        // (e.g. "pue__a1b2c3" starts with "pue") which never matches the
+        // internal-metric prefix unless the user has somehow named a
+        // metric `kairosdb_*` themselves; the lower-case prefix check
+        // catches both raw and mangled forms.
         if (isInternalMetric(tableName.getTableName())) {
             return null;
         }
         return client.resolveTableName(tableName.getTableName())
-                .map(resolved -> new KairosdbTableHandle(connectorId.toString(), KairosdbNameSpace.SCHEMA, resolved))
+                .map(kairosOriginal -> {
+                    // Carry the Trino-side name on the handle so that
+                    // toSchemaTableName() round-trips through SHOW TABLES /
+                    // DESCRIBE faithfully.  Empty when the Trino-side name
+                    // is just the lowercase of the KairosDB original (no
+                    // mangling); set when the metric belongs to a case-
+                    // collision group and was given a hash suffix.
+                    Optional<String> trinoSide =
+                            tableName.getTableName().equals(kairosOriginal.toLowerCase(Locale.ROOT))
+                                    ? Optional.empty()
+                                    : Optional.of(tableName.getTableName());
+                    return new KairosdbTableHandle(
+                            connectorId.toString(),
+                            KairosdbNameSpace.SCHEMA,
+                            kairosOriginal,
+                            trinoSide);
+                })
                 .orElse(null);
     }
 
@@ -83,7 +106,8 @@ public class KairosdbMetadata
     {
         KairosdbTableHandle handle = (KairosdbTableHandle) table;
         List<ColumnMetadata> columns = client.getColumns(handle.getTableName());
-        return new ConnectorTableMetadata(handle.toSchemaTableName(), columns);
+        Optional<String> comment = client.getTableComment(handle.getTableName());
+        return new ConnectorTableMetadata(handle.toSchemaTableName(), columns, ImmutableMap.of(), comment);
     }
 
     @Override

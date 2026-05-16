@@ -92,7 +92,7 @@ public class KairosdbClient
     private final HttpUrl baseUrl;
     private final ObjectMapper jsonMapper;
     private final KairosdbConfig config;
-    private final Supplier<List<String>> metricNamesCache;
+    private final Supplier<KairosdbMetricView> metricViewCache;
     private final Cache<String, MetricSchema> schemaByMetricCache;
 
     @Inject
@@ -105,37 +105,81 @@ public class KairosdbClient
                 .build();
         this.jsonMapper = new ObjectMapper();
         long ttlMillis = config.getMetadataCacheTtl().toMillis();
-        this.metricNamesCache = Suppliers.memoizeWithExpiration(this::fetchMetricNames, ttlMillis, TimeUnit.MILLISECONDS);
+        this.metricViewCache = Suppliers.memoizeWithExpiration(this::buildMetricView, ttlMillis, TimeUnit.MILLISECONDS);
         this.schemaByMetricCache = CacheBuilder.newBuilder()
                 .expireAfterWrite(ttlMillis, TimeUnit.MILLISECONDS)
                 .build();
     }
 
-    /** All metric names KairosDB currently knows about (memoised). */
+    /**
+     * All Trino-side metric names currently visible to SQL (memoised).
+     *
+     * <p>For every KairosDB metric whose lowercase form is unique this is
+     * just that lowercase form (e.g. {@code sys.load}, or {@code sys.mem}
+     * for a KairosDB original of {@code Sys.Mem}).  When two or more
+     * KairosDB metrics share a lowercase form (e.g. {@code pue} and
+     * {@code Pue}), <em>every</em> member of the collision group is
+     * exposed under a deterministic hash-suffixed name like
+     * {@code pue__a1b2c3} - see {@link KairosdbMetricView} for the rule
+     * and the rationale.
+     */
     public List<String> listMetricNames()
     {
-        return metricNamesCache.get();
+        return metricViewCache.get().trinoSideNames();
     }
 
     /**
-     * Trino SQL standard table-name resolution: exact-case first, then
-     * case-insensitive (controlled by {@code kairosdb.case-insensitive-name-matching}).
+     * Translates a Trino-side identifier (always lowercase, as Trino's
+     * SPI lowercases {@link io.trino.spi.connector.SchemaTableName} before
+     * the connector ever sees it) to the case-preserving KairosDB metric
+     * name suitable for HTTP requests.
+     *
+     * <p>For collision-group members the input is the mangled form; the
+     * unmangled lowercase form returns empty so that {@code SELECT * FROM
+     * pue} fails loudly when both {@code pue} and {@code Pue} exist in
+     * KairosDB rather than silently routing to one variant.  When no
+     * collision exists, the lowercase form maps to the (possibly mixed-case)
+     * original, which is the long-running case-insensitive behaviour.
      */
     public Optional<String> resolveTableName(String requested)
     {
-        List<String> names = listMetricNames();
-        if (names.contains(requested)) {
-            return Optional.of(requested);
+        return metricViewCache.get().resolve(requested);
+    }
+
+    /**
+     * Auto-generated table comment for collision-group members (returns
+     * empty for unmangled metrics).  Surfaces the original KairosDB name
+     * via {@code SHOW CREATE TABLE} and {@code system.metadata.table_comments}
+     * so users can map mangled SQL identifiers back to their KairosDB
+     * source without out-of-band tooling.
+     */
+    public Optional<String> getTableComment(String kairosOriginalName)
+    {
+        return metricViewCache.get().commentFor(kairosOriginalName);
+    }
+
+    /**
+     * Inverse of {@link #resolveTableName(String)}: given a case-preserving
+     * KairosDB metric name, returns the Trino-side name that addresses it.
+     * Empty if the metric is not currently exposed.  Used when constructing
+     * a {@link KairosdbTableHandle} so that
+     * {@code ConnectorTableHandle.toSchemaTableName()} matches the SQL
+     * identifier the user typed.
+     */
+    public Optional<String> trinoSideNameOf(String kairosOriginalName)
+    {
+        return metricViewCache.get().trinoSideNameOf(kairosOriginalName);
+    }
+
+    private KairosdbMetricView buildMetricView()
+    {
+        List<String> raw = fetchMetricNames();
+        KairosdbMetricView view = KairosdbMetricView.build(raw, config.isCaseInsensitiveNameMatching());
+        if (view.hasAnyCollision()) {
+            log.info("KairosDB metric list has case collisions; affected metrics are exposed under hash-suffixed names. " +
+                    "Inspect via SHOW TABLES + system.metadata.table_comments to discover the mapping.");
         }
-        if (!config.isCaseInsensitiveNameMatching()) {
-            return Optional.empty();
-        }
-        for (String name : names) {
-            if (name.equalsIgnoreCase(requested)) {
-                return Optional.of(name);
-            }
-        }
-        return Optional.empty();
+        return view;
     }
 
     /**

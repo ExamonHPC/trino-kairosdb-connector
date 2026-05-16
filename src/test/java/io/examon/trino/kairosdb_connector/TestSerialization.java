@@ -10,7 +10,6 @@ import io.trino.spi.type.BigintType;
 import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.TimestampWithTimeZoneType;
 import io.trino.spi.type.Type;
-import io.trino.spi.type.TypeId;
 import io.trino.spi.type.VarcharType;
 import org.junit.jupiter.api.Test;
 
@@ -94,6 +93,7 @@ final class TestSerialization
                 "kdb",
                 "kairosdb",
                 "ts_test",
+                Optional.empty(),
                 Optional.of(1_700_000_000_000L),
                 Optional.of(1_700_000_300_000L),
                 tags,
@@ -109,6 +109,29 @@ final class TestSerialization
         assertThat(round.getPushedLimit()).contains(42L);
         assertThat(round.getPushedAggregators())
                 .containsExactly("sum;1h;start_time", "avg;5m;sampling");
+        assertThat(round.getTrinoTableName()).isEmpty();
+    }
+
+    @Test
+    void mangledHandleRoundTrip()
+    {
+        // Case-collision scenario: tableName carries the KairosDB original
+        // ("Pue") and trinoTableName carries the mangled display name
+        // ("pue__a1b2c3").  Both fields must survive the wire round-trip
+        // intact, otherwise a worker would query the wrong KairosDB
+        // metric or report the wrong SchemaTableName back to the engine.
+        KairosdbTableHandle original = new KairosdbTableHandle(
+                "kdb",
+                "kairosdb",
+                "Pue",
+                Optional.of("pue__a1b2c3"));
+
+        KairosdbTableHandle round = TABLE_HANDLE_CODEC.fromJson(TABLE_HANDLE_CODEC.toJson(original));
+
+        assertThat(round).isEqualTo(original);
+        assertThat(round.getTableName()).isEqualTo("Pue");
+        assertThat(round.getTrinoTableName()).contains("pue__a1b2c3");
+        assertThat(round.toSchemaTableName().getTableName()).isEqualTo("pue__a1b2c3");
     }
 
     @Test

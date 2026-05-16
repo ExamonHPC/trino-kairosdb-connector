@@ -136,22 +136,29 @@ public class KairosdbConfig
     }
 
     /**
-     * Controls table-name resolution when Trino's parser hands the connector
-     * a lowercased identifier (the usual case for unquoted SQL).  KairosDB
-     * is case-sensitive; Trino's SPI is not (see
-     * https://github.com/trinodb/trino/issues/17), so the two sides have to
-     * be reconciled somewhere.
+     * Controls how mixed-case KairosDB metric names are exposed to Trino,
+     * which always lowercases identifiers in {@link io.trino.spi.connector.SchemaTableName}
+     * before the connector ever sees them (see
+     * https://github.com/trinodb/trino/issues/17).
      *
-     * <p>When true (default) the connector first looks for an exact-case
-     * match against the KairosDB-side metric list and, failing that, falls
-     * back to a case-insensitive match.  This matches the long-running
-     * production behaviour: both {@code SELECT * FROM "MyMetric"} and
-     * {@code SELECT * FROM mymetric} resolve to the KairosDB metric named
-     * {@code MyMetric}.
+     * <p><b>When true (default)</b>: a single mixed-case KairosDB metric
+     * (e.g. {@code Sys.Mem}) is reachable from SQL via its lowercase form
+     * ({@code SELECT * FROM sys.mem}).  Tag values stay case-sensitive
+     * (this flag affects identifiers only).  This matches the long-running
+     * production behaviour.
      *
-     * <p>When false only exact-case matches are accepted, which makes
-     * sense if two metrics differ only in case (rare) or for a stricter
-     * SQL-standard catalog experience.
+     * <p><b>When false</b>: only fully-lowercase KairosDB metrics are
+     * reachable from SQL.  Mixed-case singletons are intentionally hidden
+     * (a stricter SQL-standard experience).  Tag values are unaffected.
+     *
+     * <p><b>Case-collision rule (independent of this flag)</b>: when two or
+     * more KairosDB metrics share the same lowercase form (e.g. {@code pue}
+     * and {@code Pue}), every member of the collision group is exposed
+     * under a deterministic hash-suffixed name like {@code pue__a1b2c3}.
+     * Querying the unmangled lowercase form returns "table not found" -
+     * silent shadowing of one variant by another is never permitted.
+     * {@code SHOW TABLES} and {@code system.metadata.table_comments}
+     * surface the mapping; see {@link KairosdbMetricView} for details.
      *
      * <p>Column (tag) names are <em>not</em> affected by this flag: Trino's
      * SPI forces them to lowercase unconditionally.  The connector always
@@ -159,7 +166,7 @@ public class KairosdbConfig
      * and parsed from KairosDB is always faithful.
      */
     @Config("kairosdb.case-insensitive-name-matching")
-    @ConfigDescription("Resolve table names case-insensitively after first trying exact-case match")
+    @ConfigDescription("Expose mixed-case KairosDB metrics under their lowercase form (collisions are always hash-mangled regardless of this flag)")
     public KairosdbConfig setCaseInsensitiveNameMatching(boolean caseInsensitiveNameMatching)
     {
         this.caseInsensitiveNameMatching = caseInsensitiveNameMatching;
