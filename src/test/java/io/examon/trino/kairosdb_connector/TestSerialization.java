@@ -39,12 +39,11 @@ final class TestSerialization
 
     /**
      * Column handles carry a Trino {@link Type} field, which only deserialises
-     * with a {@link TypeDeserializer} that can look up the type by id.  In
-     * production this is wired by Trino's {@code TypeDeserializerModule}; for
+     * with a {@link TypeDeserializer} that can look up the type by id.  At
+     * runtime this is wired by Trino's {@code TypeDeserializerModule}; for
      * tests we hand-roll a minimal lookup over the few types this connector
      * emits.  This mirrors the codec the coordinator-worker dispatch uses
-     * for real - it has caught at least one historical regression where the
-     * handle accidentally embedded a non-JSON-friendly object.
+     * and pins the contract that handles must be JSON-serialisable.
      */
     private static final JsonCodec<KairosdbColumnHandle> COLUMN_HANDLE_CODEC = buildColumnHandleCodec();
 

@@ -71,6 +71,37 @@ ORDER  BY timestamp
 LIMIT  100;
 ```
 
+### Timestamp literals
+
+KairosDB stores datapoints as epoch milliseconds in UTC, so every
+`WHERE timestamp …` predicate resolves to a UTC range under the hood.
+
+With `kairosdb.timestamp.format=BIGINT` (default) write raw epoch
+milliseconds, e.g. `WHERE timestamp BETWEEN 1750370400000 AND 1750456800000`
+(epoch seconds are also accepted — values below ~year 2128 in seconds are
+rescaled to milliseconds).
+
+With `TIMESTAMP_MILLIS` or `TIMESTAMP_TZ` write SQL TIMESTAMP literals.
+Four styles cover the common cases (target instant: midnight 2025-06-20
+local Rome time, which is `2025-06-19T22:00:00Z`):
+
+| Style | Example | Notes |
+|---|---|---|
+| Pinned literal | `timestamp '2025-06-20 00:00:00 Europe/Rome'` | Self-documenting, immune to session-zone changes. |
+| Session-relative | `SET TIME ZONE 'Europe/Rome';` then `timestamp '2025-06-20 00:00:00'` | Bare literal picks up the session zone. |
+| ISO-8601 with offset | `from_iso8601_timestamp('2025-06-20T00:00:00+02:00')` | Useful when the offset is a parameter. |
+| UTC explicit | `timestamp '2025-06-20 00:00:00 UTC'` | Simplest for operational queries. |
+
+`TIMESTAMP_TZ` results are packed in UTC; project with `AT TIME ZONE` to
+display rows in a local zone (the predicate still pushes a UTC window to
+KairosDB):
+
+```sql
+SELECT timestamp AT TIME ZONE 'Europe/Rome' AS ts, value
+FROM   kairosdb.kairosdb."sys.load"
+WHERE  timestamp >= timestamp '2025-06-20 00:00:00 Europe/Rome';
+```
+
 ### Pushdown surface
 
 | SQL construct                                    | Pushed to KairosDB?       |

@@ -11,11 +11,11 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Locks in the property the old connector lost (and re-fixed in 2.4.1):
- * the connector classes must hold per-catalog state, not static singletons.
- * Two catalogs pointing at different KairosDB clusters must produce two
- * independent {@link KairosdbConfig} / {@link KairosdbClient} graphs;
- * otherwise the first catalog to load silently overrides the second.
+ * Locks in per-catalog isolation: the connector classes must hold
+ * per-catalog state, not static singletons.  Two catalogs pointing at
+ * different KairosDB clusters must produce two independent
+ * {@link KairosdbConfig} / {@link KairosdbClient} graphs; otherwise the
+ * first catalog to load silently overrides the second.
  *
  * <p>The test exercises the exact bootstrap path
  * {@link KairosdbConnectorFactory} uses (minus the SPI version check and

@@ -14,10 +14,9 @@ import java.util.concurrent.TimeUnit;
 /**
  * Connector configuration.
  *
- * <p>Each property accepts both the modern {@code kairosdb.*} key and the
- * unprefixed legacy key that earlier releases of this plugin used.  Legacy
- * aliases are recognised via airlift's {@link LegacyConfig} so existing
- * catalog files keep working without modification.
+ * <p>Each property accepts both the prefixed {@code kairosdb.*} key and an
+ * unprefixed legacy alias, recognised via airlift's {@link LegacyConfig}
+ * so older catalog files keep working without modification.
  */
 public class KairosdbConfig
 {
@@ -144,8 +143,7 @@ public class KairosdbConfig
      * <p><b>When true (default)</b>: a single mixed-case KairosDB metric
      * (e.g. {@code Sys.Mem}) is reachable from SQL via its lowercase form
      * ({@code SELECT * FROM sys.mem}).  Tag values stay case-sensitive
-     * (this flag affects identifiers only).  This matches the long-running
-     * production behaviour.
+     * (this flag affects identifiers only).
      *
      * <p><b>When false</b>: only fully-lowercase KairosDB metrics are
      * reachable from SQL.  Mixed-case singletons are intentionally hidden

@@ -73,11 +73,9 @@ public class KairosdbClient
     private static final MediaType JSON = MediaType.get("application/json; charset=utf-8");
 
     // Tag discovery: see discoverSchema() for the full design discussion.
-    // The KairosDB /query/tags endpoint requires a time range, and there's
+    // The KairosDB /query/tags endpoint requires a time range, and there is
     // no out-of-band way to know how far back a metric has been written, so
     // we probe in fixed 30-day jumps for up to 120 iterations (~10 years).
-    // This is the production-validated cadence; both constants are kept
-    // identical to the long-running connector.
     private static final int TAG_LOOKBACK_WINDOW_DAYS = 30;
     private static final int TAG_LOOKBACK_MAX_WINDOWS = 120;
 
@@ -139,7 +137,7 @@ public class KairosdbClient
      * pue} fails loudly when both {@code pue} and {@code Pue} exist in
      * KairosDB rather than silently routing to one variant.  When no
      * collision exists, the lowercase form maps to the (possibly mixed-case)
-     * original, which is the long-running case-insensitive behaviour.
+     * original via the case-insensitive fallback.
      */
     public Optional<String> resolveTableName(String requested)
     {
@@ -224,8 +222,7 @@ public class KairosdbClient
      * Discovers the tag schema of one metric by probing the KairosDB
      * {@code /query/tags} endpoint backwards through time.
      *
-     * <p><b>Algorithm</b> (preserved verbatim from the long-running
-     * production connector):
+     * <p><b>Algorithm</b>:
      *
      * <pre>{@code
      *   cursor = now
@@ -241,23 +238,20 @@ public class KairosdbClient
      * The query KairosDB sees on iteration k therefore covers
      * {@code [now - k * 30d, now]}, not a sliding 30-day slice.
      *
-     * <p><b>Why this shape</b>: the 99.9% case is a "live" metric with at
+     * <p><b>Why this shape</b>: the common case is a "live" metric with at
      * least one datapoint in the last 30 days, so the very first probe
      * succeeds and the loop exits.  The remaining tail caters to metrics
-     * that wrote data once a long time ago and went silent (rare in
-     * practice).  "Latest window wins" is a useful semantic byproduct:
-     * because the probes start at now, any tags currently in use - even
-     * if the metric's schema has evolved over the years - are caught
-     * first.
+     * that wrote data once a long time ago and went silent.  "Latest
+     * window wins" is a useful semantic byproduct: because the probes
+     * start at now, any tags currently in use - even if the metric's
+     * schema has evolved over the years - are caught first.
      *
      * <p><b>Worst case</b>: a metric whose only datapoint is from years
      * ago triggers many probes, each scanning more of KairosDB's index
-     * than the previous (the expanding window).  In production this
-     * has never been observed to be a problem on examon-class workloads,
-     * but it is a known property of the algorithm.
+     * than the previous (the expanding window).  This is a known
+     * property of the algorithm.
      *
-     * <p><b>Possible future improvements</b> (annotated for the next
-     * iteration; intentionally not implemented here):
+     * <p><b>Possible future improvements</b>:
      * <ul>
      *   <li><i>Exponential cadence</i> instead of fixed 30-day jumps -
      *       e.g. probe {@code 1h, 1d, 30d, 365d, 10y}.  Caps the loop at
@@ -476,8 +470,8 @@ public class KairosdbClient
      * specs sourced from the hidden {@code sampling_aggregator} column.  Each
      * spec is re-parsed and serialised into a KairosDB aggregator JSON
      * object; an entry that has somehow survived but cannot be re-parsed is
-     * logged and skipped rather than failing the whole query, matching the
-     * lenient behaviour of the production connector.
+     * logged and skipped (lenient: a malformed entry never aborts the
+     * whole query).
      */
     public List<QueryDatapointsResponse.DataResult> queryDatapoints(
             String metricName,
@@ -566,9 +560,9 @@ public class KairosdbClient
      * <p>Re-parsing here (rather than carrying parsed POJOs through the
      * handle/split) keeps the serialised form a stable list-of-strings.  A
      * spec that fails to re-parse is dropped with a warning rather than
-     * failing the query: this mirrors the production behaviour and is the
-     * only sane response given that the same spec passed validation in the
-     * coordinator earlier.
+     * failing the query: the same spec passed validation in the
+     * coordinator earlier, so re-failing here would be fatal for no good
+     * reason.
      */
     private static List<Map<String, Object>> buildAggregatorJson(List<String> specs)
     {

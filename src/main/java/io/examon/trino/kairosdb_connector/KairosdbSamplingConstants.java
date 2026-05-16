@@ -35,15 +35,14 @@ import java.util.regex.Pattern;
  *       silently falls back to {@code avg} when KairosDB itself does not
  *       recognise it is the JSON builder's job, not ours.</li>
  *   <li><b>interval</b>: {@code <digits>[smhd]?} - bare digits default to
- *       minutes, matching the long-running production behaviour.</li>
+ *       minutes.</li>
  *   <li><b>alignment</b>: one of {@link #VALID_ALIGN_OPTIONS}; {@code none}
  *       means "do not send any align_* flag to KairosDB".</li>
  * </ul>
  *
  * <p>Invalid values are <em>not</em> a hard error: callers catch the
- * {@link IllegalArgumentException} and skip the malformed entry, matching
- * the production behaviour where a single bad aggregator never aborts the
- * whole query.
+ * {@link IllegalArgumentException} and skip the malformed entry, so a
+ * single bad aggregator never aborts the whole query.
  */
 public final class KairosdbSamplingConstants
 {

@@ -24,11 +24,10 @@ import java.util.Optional;
  * </ul>
  *
  * <p>True string-range predicates (e.g. {@code host > 'foo'}) yield no
- * concrete values; the long-running production behaviour is to push down
- * what we <em>can</em> extract and silently let KairosDB ignore the rest.
- * In practice every tag predicate observed against this connector is an
- * equality or {@code IN} list, so this is not a problem; the limitation is
- * documented here in case it ever needs revisiting.
+ * concrete values; we push down what we <em>can</em> extract and silently
+ * let the rest evaluate above the connector.  Tag predicates against this
+ * connector are expected to be equality or {@code IN} lists; the limitation
+ * is documented here in case it ever needs revisiting.
  */
 final class KairosdbTagPushdown
 {
@@ -39,11 +38,10 @@ final class KairosdbTagPushdown
      *         {@link Optional#empty()} if the domain is unrecognised.  An
      *         empty list (but {@code Optional} present) means "the predicate
      *         is shaped like something we handle, but it admits no concrete
-     *         values we can forward" – callers should treat that the same
-     *         way the production code did: claim the domain as pushed and
-     *         forward an empty value list (KairosDB will return rows that
+     *         values we can forward" – callers claim the domain as pushed
+     *         and forward an empty value list.  KairosDB then returns rows
      *         this tag would otherwise have filtered, but in practice this
-     *         branch is unreachable).
+     *         branch is unreachable.
      */
     static Optional<List<String>> extractAdmittedValues(Domain domain)
     {
@@ -61,8 +59,9 @@ final class KairosdbTagPushdown
                     }
                 }
                 // Range queries on string tags are intentionally ignored –
-                // KairosDB has no equivalent and the production connector
-                // has always silently dropped them.
+                // KairosDB has no equivalent and the connector silently
+                // drops them (Trino still re-evaluates the predicate above
+                // us, so the user-visible result is correct).
             }
             return Optional.of(out.build());
         }

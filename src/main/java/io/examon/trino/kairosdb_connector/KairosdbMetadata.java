@@ -151,12 +151,11 @@ public class KairosdbMetadata
      * (expressions, dynamic filters, range queries on tags) stays as
      * "remaining" and Trino re-evaluates it above the connector.
      *
-     * <p>All three kinds of pushdown follow the production-validated
-     * convention of claiming the column as fully consumed even when the
-     * equivalent KairosDB query is technically a superset of the predicate.
-     * In practice every observed query has been a single timestamp range
-     * plus tag equalities (plus, occasionally, sampling aggregators), so the
-     * superset case never fires.
+     * <p>All three kinds of pushdown claim the column as fully consumed
+     * even when the equivalent KairosDB query is technically a superset
+     * of the predicate.  The expected query shape is a single timestamp
+     * range plus tag equalities (plus, occasionally, sampling
+     * aggregators), so the superset case is not exercised in practice.
      */
     @Override
     public Optional<ConstraintApplicationResult<ConnectorTableHandle>> applyFilter(
@@ -227,9 +226,9 @@ public class KairosdbMetadata
                 continue;
             }
             tagFilters.put(originalTagName, admitted.get());
-            // Claim the tag domain as fully pushed down, matching production
-            // behaviour even for the (unlikely) case of a string range that
-            // yielded zero concrete values.
+            // Claim the tag domain as fully pushed down, even for the
+            // (unlikely) case of a string range that yielded zero
+            // concrete values.
             remaining.remove(column);
         }
 
@@ -359,9 +358,9 @@ public class KairosdbMetadata
         List<String> validated = new ArrayList<>();
         for (String value : values.get()) {
             // Each value may itself encode a '|'-separated chain.  Split,
-            // trim, and validate each segment.  Order within a value is
-            // preserved verbatim because that is the only knob the user
-            // has to control chain order.
+            // trim, and validate each segment.  The order the user wrote
+            // the chain in is preserved end-to-end because that is the
+            // only knob the user has to control chain order.
             for (String segment : value.split("\\|")) {
                 String spec = segment.trim();
                 if (spec.isEmpty()) {

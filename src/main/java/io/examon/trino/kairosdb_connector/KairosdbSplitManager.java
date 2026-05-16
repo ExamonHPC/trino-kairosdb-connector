@@ -41,8 +41,7 @@ import static java.util.Objects.requireNonNull;
  *
  * <p>Adjacent splits are offset by one millisecond.  KairosDB query bounds are
  * inclusive on both ends, so without that gap a datapoint landing exactly on
- * a slice boundary would be returned by both neighbours.  This is the same
- * fix the production connector carried for several releases.
+ * a slice boundary would be returned by both neighbours.
  *
  * <p>When a {@code LIMIT N} or any {@code sampling_aggregator} has been
  * pushed down, the manager emits exactly <em>one</em> split covering the
@@ -93,7 +92,7 @@ public class KairosdbSplitManager
             // re-bucket each slice under aggregators (so a daily bucket asked
             // across an N-day window would yield N independent daily buckets,
             // not one).  Collapsing to a single split makes KairosDB do the
-            // work and matches the long-running production behaviour.
+            // work.
             splits = ImmutableList.of(new KairosdbSplit(
                     connectorId.toString(),
                     handle.getSchemaName(),

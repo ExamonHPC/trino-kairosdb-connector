@@ -25,7 +25,7 @@ import static io.trino.spi.type.DateTimeEncoding.unpackMillisUtc;
  * <ul>
  *   <li>{@code BIGINT}: raw epoch milliseconds, but with a "reasonable date"
  *       heuristic that re-interprets values smaller than ~5&times;10<sup>9</sup>
- *       as epoch seconds (long-running production behaviour preserved).</li>
+ *       as epoch seconds.</li>
  *   <li>{@code TIMESTAMP_MILLIS}: Trino stores microseconds; divide by 1000.</li>
  *   <li>{@code TIMESTAMP_TZ}: packed via {@code DateTimeEncoding};
  *       {@code unpackMillisUtc} returns epoch ms directly.</li>
@@ -124,12 +124,12 @@ final class KairosdbTimestampPushdown
     }
 
     /**
-     * Hardening kept from the long-running production connector: if a user
-     * writes {@code WHERE timestamp = 1234567890} with the BIGINT format,
-     * they almost certainly mean epoch seconds, not Unix epoch milliseconds
-     * sitting near 1970-01-15.  We accept the value as-is when it lands in
-     * 2000-2100, otherwise we attempt a seconds-to-millis re-interpretation
-     * and accept it if that lands in range.
+     * Re-interprets a BIGINT timestamp value: if a user writes
+     * {@code WHERE timestamp = 1234567890} with the BIGINT format, they
+     * almost certainly mean epoch seconds, not Unix epoch milliseconds
+     * sitting near 1970-01-15.  We accept the value as-is when it lands
+     * in 2000-2100, otherwise we attempt a seconds-to-millis
+     * re-interpretation and accept it if that lands in range.
      */
     private static long interpretBigintMillis(long raw)
     {

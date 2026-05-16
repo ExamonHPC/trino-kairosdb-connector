@@ -15,9 +15,8 @@ import static io.airlift.configuration.testing.ConfigAssertions.recordDefaults;
 
 /**
  * Locks in the {@link KairosdbConfig} property contract: default values,
- * every new {@code kairosdb.*} key, and the legacy bare keys we still
- * accept for backwards compatibility with the original connector's
- * catalog files.
+ * every {@code kairosdb.*} key, and the legacy bare-key aliases accepted
+ * for backwards compatibility.
  */
 final class TestKairosdbConfig
 {
@@ -60,9 +59,9 @@ final class TestKairosdbConfig
     }
 
     /**
-     * Catalog files written for earlier releases of this connector used
-     * bare property names (no {@code kairosdb.} prefix).  They keep
-     * working because the new keys are annotated with {@code @LegacyConfig}.
+     * Verifies that the legacy bare property names (no {@code kairosdb.}
+     * prefix) resolve to the same configuration as their prefixed
+     * counterparts via {@code @LegacyConfig}.
      */
     @Test
     void legacyKeysStillResolve()

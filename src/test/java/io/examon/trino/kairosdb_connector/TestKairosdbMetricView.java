@@ -43,8 +43,7 @@ final class TestKairosdbMetricView
     void singleMixedCaseSingletonIsHiddenWhenStrict()
     {
         // caseInsensitive=false: mixed-case singleton is intentionally
-        // unreachable from SQL.  This preserves the strict mode the
-        // legacy connector exposed via the same config knob.
+        // unreachable from SQL (strict mode).
         KairosdbMetricView view = KairosdbMetricView.build(List.of("Sys.Mem"), false);
 
         assertThat(view.trinoSideNames()).isEmpty();
@@ -55,9 +54,8 @@ final class TestKairosdbMetricView
     @Test
     void twoVariantCollisionMangleEverything()
     {
-        // Production scenario: KairosDB legitimately has both `pue` and
-        // `Pue` (separate metrics from different scrapers).  Neither wins
-        // the unmangled slot - both get hash suffixes.
+        // KairosDB has both `pue` and `Pue` as separate metrics.  Neither
+        // wins the unmangled slot - both get hash suffixes.
         KairosdbMetricView view = KairosdbMetricView.build(List.of("pue", "Pue"), true);
 
         String suffixLower = KairosdbMetricView.hashSuffix("pue");

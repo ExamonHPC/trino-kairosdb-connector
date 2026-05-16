@@ -39,7 +39,7 @@ import static java.util.Objects.requireNonNull;
  *       form maps back to the original via case-insensitive fallback,
  *       gated on the {@code kairosdb.case-insensitive-name-matching}
  *       config (when {@code false}, mixed-case singletons are intentionally
- *       hidden, matching the strict behaviour of the legacy connector).</li>
+ *       hidden, i.e. unreachable from SQL).</li>
  *   <li>For groups of size &gt; 1 (a real collision), <em>every</em> member
  *       gets a deterministic hash-suffixed Trino-side name of the form
  *       {@code <lowercase>__<6 hex of sha256(original)>}.  This guarantees

@@ -13,8 +13,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Locks in the VARCHAR Domain -> KairosDB tag-filter value list translation.
- * The bullet-point production behaviour is:
+ * Locks in the VARCHAR Domain -> KairosDB tag-filter value list translation:
  * <ul>
  *   <li>equality and IN both collapse to a list of admitted values;</li>
  *   <li>string-range predicates have no KairosDB equivalent and are
@@ -56,7 +55,8 @@ final class TestKairosdbTagPushdown
     {
         // host > 'm' AND host < 'p'  -- KairosDB has no string-range filter,
         // so we yield an empty admitted list.  The caller still claims the
-        // tag column as fully pushed to match the production behaviour.
+        // tag column as fully pushed even when no concrete values were
+        // extracted.
         Domain d = Domain.create(
                 ValueSet.ofRanges(Range.range(VARCHAR,
                         Slices.utf8Slice("m"), false,

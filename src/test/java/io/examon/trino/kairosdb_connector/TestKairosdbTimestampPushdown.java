@@ -21,7 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Locks in the predicate -> [startMillis, endMillis] translation for the
  * three supported timestamp column types and the "epoch seconds vs ms"
- * heuristic that production users rely on under BIGINT.
+ * heuristic for BIGINT.
  */
 final class TestKairosdbTimestampPushdown
 {
