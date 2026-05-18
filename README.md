@@ -100,8 +100,6 @@ KairosDB stores datapoints as epoch milliseconds in UTC, so every
 
 With `kairosdb.timestamp.format=BIGINT` (default) write raw epoch
 milliseconds, e.g. `WHERE timestamp BETWEEN 1750370400000 AND 1750456800000`
-(epoch seconds are also accepted — values below ~year 2128 in seconds are
-rescaled to milliseconds).
 
 With `TIMESTAMP_MILLIS` or `TIMESTAMP_TZ` write SQL TIMESTAMP literals.
 Four styles cover the common cases (target instant: midnight 2025-06-20
