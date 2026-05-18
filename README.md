@@ -1,5 +1,10 @@
 # trino-kairosdb-connector
 
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Trino](https://img.shields.io/badge/Trino-476-blue.svg)](https://trino.io/)
+[![JDK](https://img.shields.io/badge/JDK-24-blue.svg)](https://openjdk.org/)
+[![KairosDB](https://img.shields.io/badge/KairosDB-1.2.x-blue.svg)](https://kairosdb.github.io/)
+
 A Trino connector for the [KairosDB](https://kairosdb.github.io/) time-series
 database. Built as a standalone shaded plugin you can drop into a [Trino](https://trino.io/) instance.
 
@@ -70,6 +75,23 @@ WHERE  timestamp BETWEEN 1750000000000 AND 1750000600000
 ORDER  BY timestamp
 LIMIT  100;
 ```
+
+### Working with values
+
+The `value` column is exposed as `VARCHAR`. KairosDB allows per-metric value
+types (numeric, string, complex/histogram), so the connector echoes whatever
+the storage layer returns rather than guessing a type per metric. For metrics
+you know to be numeric, cast at query time:
+
+```sql
+SELECT timestamp, CAST(value AS DOUBLE) AS reading
+FROM   kairosdb.kairosdb.cpu1_temp
+WHERE  timestamp BETWEEN 1779049232000 AND 1779049832000;
+```
+
+If you find yourself writing the cast everywhere for a given metric, a SQL
+view (`CREATE VIEW`) over the cast is the cleanest way to hide it from
+downstream consumers without touching the connector.
 
 ### Timestamp literals
 
@@ -217,13 +239,15 @@ Dev stack documented in [`scripts/README.md`](scripts/README.md).
 
 ## Compatibility
 
-- Trino: built and tested against **476**. The SPI surface used is stable
-  back a few releases; rebuild against a different `trino.version` in
-  `pom.xml` to target another version.
-- KairosDB: tested against **1.2.x**. Any KairosDB whose `/api/v1` HTTP
-  surface accepts the standard `metricnames` / `datapoints/query/tags` /
-  `datapoints/query` endpoints will work.
+| Component              | Tested with                                        | Notes                                                                                                                                                  |
+|------------------------|----------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Trino                  | **476**                                            | To target another release, change `trino.version` in `pom.xml` and rebuild; the SPI surface used is small and reasonably stable. |
+| KairosDB               | **1.2.x** (1.2.2 in CI via `examonhpc/kairosdb`)   | Any KairosDB exposing the `/api/v1/metricnames`, `/api/v1/datapoints/query`, and `/api/v1/datapoints/query/tags` endpoints should work.                |
+| JDK (build)            | **24**                                             | Required by `mvn package`.                                                                                                                             |
+| OS (build / runtime)   | Linux x86_64, Linux arm64, macOS arm64             | Inherited from Trino and the (pure-Java, native-free) bundled dependencies.                                                                            |
+| KairosDB storage layer | Cassandra 3.11+                                    | Any CQL-3 backend KairosDB itself can use is transparent to the connector and to SQL.                                                                  |
 
 ## License
 
-To be added by the maintainer before publishing.
+Licensed under the [Apache License, Version 2.0](LICENSE). Third-party
+attributions are listed in [`NOTICE`](NOTICE).

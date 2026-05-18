@@ -6,7 +6,7 @@
 
     <groupId>io.examon.trino</groupId>
     <artifactId>kairosdb-connector</artifactId>
-    <version>3.0.0-SNAPSHOT</version>
+    <version>3.0.0-rc1</version>
     <packaging>jar</packaging>
 
     <name>Trino KairosDB connector</name>
