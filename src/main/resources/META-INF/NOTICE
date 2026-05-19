@@ -1,0 +1,21 @@
+Trino KairosDB Connector
+Copyright 2026 ExaMon Project Contributors
+
+This product is licensed under the Apache License, Version 2.0; see the
+LICENSE file at the root of this distribution for the full text.
+
+This product includes software developed by the ExaMon team at the
+University of Bologna and E4 Computer Engineering S.p.A. (https://github.com/ExamonHPC).
+
+The plugin structure follows conventions established by Apache Trino
+(https://trino.io), distributed under the Apache License, Version 2.0.
+Specifically, the connector skeleton was derived from the Trino
+trino-prometheus plugin (Apache 2.0).
+
+Dependencies:
+- Trino SPI                Apache 2.0
+- Airlift                  Apache 2.0
+- Jackson                  Apache 2.0
+- Guava                    Apache 2.0
+- Guice                    Apache 2.0
+- OkHttp                   Apache 2.0
