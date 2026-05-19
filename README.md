@@ -14,6 +14,10 @@ schema (`kairosdb`), with one column per tag plus the synthetic
 (timestamp window, tag filters, LIMIT, sampling aggregators) are pushed down
 to KairosDB; Trino keeps the rest.
 
+## Status
+
+Status: public beta / release candidate.
+
 ## Features
 
 - **Metric and tag discovery** with per-metric tag-schema caching.
@@ -49,7 +53,7 @@ to KairosDB; Trino keeps the rest.
 |------------------------------------------------|---------|----------------------------------------------------------------------------------------------------------|
 | `kairosdb.url`                                 | -       | Required. KairosDB HTTP base URL.                                                                        |
 | `kairosdb.timestamp.format`                    | `BIGINT`| `BIGINT`, `TIMESTAMP_MILLIS`, or `TIMESTAMP_TZ`.                                                          |
-| `kairosdb.timestamp.default-start-hours`       | `1`     | Look-back when no `WHERE timestamp ...` is present. Sessionable.                                          |
+| `kairosdb.timestamp.default-start-hours`       | `1`     | Look-back applied when the query has no lower-bound timestamp predicate (no `WHERE timestamp ...`, or upper-bound only). Sessionable as `default_start_hours`. |
 | `kairosdb.split-size`                          | `1d`    | Width of one time-range split. Sessionable as `split_size_millis`.                                        |
 | `kairosdb.metadata.cache-ttl`                  | `30s`   | Per-worker cache for metric names and per-metric tag schemas.                                             |
 | `kairosdb.read-timeout`                        | `60s`   | OkHttp read timeout for calls to KairosDB.                                                                |
@@ -124,13 +128,47 @@ WHERE  timestamp >= timestamp '2025-06-20 00:00:00 Europe/Rome';
 
 ### Pushdown surface
 
-| SQL construct                                    | Pushed to KairosDB?       |
-|--------------------------------------------------|---------------------------|
-| `timestamp = c` / `BETWEEN a AND b` / `IN(a,b,c)`| Yes (start/end absolute)  |
-| `tag = 'v'` / `tag IN ('v1','v2')`               | Yes                       |
-| `LIMIT n`                                        | Yes (per metric series)   |
-| `sampling_aggregator = 'sum;1h;start_time'`      | Yes (see below)           |
-| `tag <  'v'`, `tag LIKE '%x'`, joins, sub-queries| No, evaluated by Trino    |
+Pushdown is *strict*: a predicate is claimed as fully handled only when
+KairosDB can natively evaluate it.  Anything else stays in Trino's residual
+filter (and may also be pushed as a wider bounding window, see below).
+
+| SQL construct                                                                | Pushed to KairosDB?                                          |
+|------------------------------------------------------------------------------|--------------------------------------------------------------|
+| `timestamp = c` / `BETWEEN a AND b` / both-sides-bounded `> / < / >= / <=`   | Yes, exactly (1 ms shift applied for half-open bounds)       |
+| `timestamp >= a` / `timestamp > a` (low-only bound)                          | Yes, exactly - high resolves to `now()` (KairosDB has no future data) |
+| `timestamp <= b` / `timestamp < b` (high-only bound)                         | Pushed within `[b − default_start_hours, b]`; rows older than the look-back are not fetched (see below) |
+| `timestamp IN (a, b, c)` / `BETWEEN ... AND ... AND != t` / disjoint OR-of-ranges | Convex-hull window pushed as a fetch hint; Trino re-applies the predicate above the connector |
+| `timestamp != t` (no other timestamp bound)                                  | No hull (predicate spans all of time); falls back to `[now − default_start_hours, now]` with the predicate left residual |
+| `tag = 'v'` / `tag IN ('v1', 'v2')`                                          | Yes, exactly                                                 |
+| `tag > 'v'` / `tag != 'v'` / `tag NOT IN (...)` / `tag IS NULL` / `tag LIKE` | No, evaluated entirely by Trino (KairosDB has no native shape) |
+| `LIMIT n`                                                                    | Yes (per metric series; Trino keeps its own LIMIT as backstop) |
+| `sampling_aggregator = 'sum;1h;start_time'`                                  | Yes (see *Sampling aggregators* below)                       |
+| joins, sub-queries, expressions                                              | No, evaluated by Trino                                       |
+
+#### How "bounding window + residual" works
+
+For multi-range timestamp predicates (`timestamp IN (...)`, disjoint
+OR-of-ranges, `!=` combined with a bounded range) the connector pushes
+the *convex hull* of the predicate as KairosDB's
+`[start_absolute, end_absolute]` window and leaves the original
+predicate in Trino's residual filter.  KairosDB scans the bounded window
+only and avoid full table scan while Trino reduces the result above the
+connector to exactly the rows the predicate admits.  The
+anomaly-correlation shape `WHERE timestamp IN (t1, t2, t3)` ends up
+scanning `[min(tᵢ), max(tᵢ)]` and returning at most three rows per series.
+
+A standalone `timestamp != T` has no convex hull (it spans all of time)
+and cannot be pushed as a window: the connector falls back to the
+default look-back and leaves the `!=` predicate residual.  In practice,
+combine `!=` with a bounded timestamp range so the window pushed to
+KairosDB stays narrow.
+
+When a query has no timestamp predicate at all, the connector applies a
+default look-back of `kairosdb.timestamp.default-start-hours` (overridable
+per session via `default_start_hours`).  When only an upper bound is given
+(e.g. `WHERE timestamp <= old_T`) the default look-back is anchored to
+that upper bound, never to `now()`, so historical queries return
+`[old_T − default_start_hours, old_T]`.
 
 ### Sampling aggregators
 
@@ -164,10 +202,10 @@ is used with more than one value; prefer the `|`-separated single value.
 KairosDB is case-sensitive (`pue` and `Pue` are distinct metrics); Trino's
 catalog API is not (it lowercases all identifiers). 
 
-#### Current behavior (v3.0.0+)
+#### Current behavior
 In the rare cases where two or more KairosDB metrics share the same lowercase form, 
-the connector exposes *every* member of the collision group under a hash-suffixed name 
-to `<lowercase>__<6 hex of sha256(original)>` and is fully deterministic across nodes and restarts.
+the connector exposes *every* member of the collision group under a hash-suffixed name off the form
+ `<lowercase>__<6 hex of sha256(original)>` and is fully deterministic across nodes and restarts.
 
 `SHOW TABLES` lists the mangled names:
 

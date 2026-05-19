@@ -47,15 +47,23 @@ final class KairosdbTimestampPushdown
     /**
      * Inspects a domain on the timestamp column and returns the smallest
      * absolute window that contains every value the domain admits, or
-     * {@link Optional#empty()} if the domain is unrecognised or empty.
+     * {@link Optional#empty()} if the domain is unrecognised, empty, or
+     * degenerate after boundary normalisation.
      *
      * <p>The returned window is always safe to push to KairosDB as a fetch
      * window: it never excludes a row that the original predicate would
      * accept.  Whether it is also <em>tight</em> (equal to the predicate) is
-     * recorded in {@link Window#exact()}.  Only single-range / single-value
-     * domains can be claimed as exact; multi-range or multi-value (e.g. an
-     * {@code IN} list with several timestamps) are necessarily approximate and
-     * must still be re-evaluated by Trino above the connector.
+     * recorded in {@link Window#exact()}.  Callers use that flag to decide
+     * whether to claim the column as fully pushed (exact) or leave it in
+     * {@code remainingFilter} for Trino to re-evaluate (inexact).
+     *
+     * <p>Half-open bounds (e.g. {@code timestamp > T}, {@code timestamp < T})
+     * are normalised by a 1&nbsp;ms shift so they map exactly onto KairosDB's
+     * inclusive {@code [start_absolute, end_absolute]} semantics: a single
+     * range with any combination of inclusive / exclusive / unbounded
+     * boundaries is exact after the shift.  Anything with more than one
+     * range (e.g. {@code IN(t1,t2,t3)} or {@code != T}) is necessarily a
+     * bounding hull and reported as inexact.
      */
     static Optional<Window> extractWindow(Domain domain, Type columnType)
     {
@@ -77,10 +85,21 @@ final class KairosdbTimestampPushdown
             }
             else {
                 if (!range.isLowUnbounded()) {
-                    low = OptionalLong.of(toMillis(range.getLowBoundedValue(), columnType));
+                    long lowMs = toMillis(range.getLowBoundedValue(), columnType);
+                    // KairosDB's start_absolute is inclusive; shift exclusive
+                    // Trino lows by one millisecond so the window matches.
+                    if (!range.isLowInclusive()) {
+                        lowMs += 1;
+                    }
+                    low = OptionalLong.of(lowMs);
                 }
                 if (!range.isHighUnbounded()) {
-                    high = OptionalLong.of(toMillis(range.getHighBoundedValue(), columnType));
+                    long highMs = toMillis(range.getHighBoundedValue(), columnType);
+                    // Mirror: KairosDB's end_absolute is inclusive too.
+                    if (!range.isHighInclusive()) {
+                        highMs -= 1;
+                    }
+                    high = OptionalLong.of(highMs);
                 }
             }
             overallMin = mergeMin(overallMin, low);
@@ -90,8 +109,20 @@ final class KairosdbTimestampPushdown
         if (overallMin.isEmpty() && overallMax.isEmpty()) {
             return Optional.empty();
         }
+        // After the boundary shift, single-range exclusive predicates like
+        // (T, T+1) collapse to an empty window.  Don't push anything in that
+        // case; the predicate is unsatisfiable and Trino will return zero
+        // rows on its own.
+        if (overallMin.isPresent() && overallMax.isPresent() && overallMin.getAsLong() > overallMax.getAsLong()) {
+            return Optional.empty();
+        }
 
-        boolean exact = ranges.size() == 1;
+        // A single, fully-shifted range maps onto KairosDB's [start, end]
+        // window with no residual semantics, provided NULL is not also
+        // admitted alongside the value set.  Anything else (multi-range,
+        // discrete IN with more than one value, mixed-with-NULL) is a
+        // bounding hull and must stay residual.
+        boolean exact = ranges.size() == 1 && !domain.isNullAllowed();
         return Optional.of(new Window(
                 overallMin.isPresent() ? Optional.of(overallMin.getAsLong()) : Optional.empty(),
                 overallMax.isPresent() ? Optional.of(overallMax.getAsLong()) : Optional.empty(),

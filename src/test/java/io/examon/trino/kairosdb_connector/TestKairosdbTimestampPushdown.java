@@ -138,6 +138,96 @@ final class TestKairosdbTimestampPushdown
 
         assertThat(w.startMillis()).isEmpty();
         assertThat(w.endMillis()).contains(T_MS);
+        // <= T_MS is a single inclusive-high half-open range; the shift logic
+        // does nothing here and the window matches the predicate exactly.
+        assertThat(w.exact()).isTrue();
+    }
+
+    @Test
+    void exclusiveLowIsShiftedByOneMillisecondAndExact()
+    {
+        // timestamp > T_MS  ->  (T_MS+1, +INF)  -- KairosDB's inclusive
+        // start_absolute makes the shifted value the correct match.
+        Domain d = Domain.create(
+                ValueSet.ofRanges(Range.greaterThan(BIGINT, T_MS)),
+                false);
+
+        Window w = KairosdbTimestampPushdown.extractWindow(d, BIGINT).orElseThrow();
+
+        assertThat(w.startMillis()).contains(T_MS + 1);
+        assertThat(w.endMillis()).isEmpty();
+        assertThat(w.exact()).isTrue();
+    }
+
+    @Test
+    void exclusiveHighIsShiftedByOneMillisecondAndExact()
+    {
+        // timestamp < T_MS  ->  (-INF, T_MS-1)
+        Domain d = Domain.create(
+                ValueSet.ofRanges(Range.lessThan(BIGINT, T_MS)),
+                false);
+
+        Window w = KairosdbTimestampPushdown.extractWindow(d, BIGINT).orElseThrow();
+
+        assertThat(w.startMillis()).isEmpty();
+        assertThat(w.endMillis()).contains(T_MS - 1);
+        assertThat(w.exact()).isTrue();
+    }
+
+    @Test
+    void halfOpenRangeIsShiftedToInclusiveAndExact()
+    {
+        // The canonical Superset / time-series BI shape:
+        //   WHERE timestamp >= A AND timestamp < B
+        // After the high-side 1ms shift the window is exactly [A, B-1].
+        long a = T_MS;
+        long b = T_MS + 3_600_000L;     // +1 hour
+        Domain d = Domain.create(
+                ValueSet.ofRanges(Range.range(BIGINT, a, true, b, false)),
+                false);
+
+        Window w = KairosdbTimestampPushdown.extractWindow(d, BIGINT).orElseThrow();
+
+        assertThat(w.startMillis()).contains(a);
+        assertThat(w.endMillis()).contains(b - 1);
+        assertThat(w.exact()).isTrue();
+    }
+
+    @Test
+    void notEqualsCollapsesToEmptyWindowAndNoPushdown()
+    {
+        // timestamp != T  ->  (-INF, T) U (T, +INF).  After the shift the
+        // bounding hull becomes [T+1, T-1] which is degenerate; we return
+        // empty so the predicate stays residual and the connector falls back
+        // to its default time floor.
+        Domain d = Domain.create(
+                ValueSet.ofRanges(
+                        Range.lessThan(BIGINT, T_MS),
+                        Range.greaterThan(BIGINT, T_MS)),
+                false);
+
+        assertThat(KairosdbTimestampPushdown.extractWindow(d, BIGINT)).isEmpty();
+    }
+
+    @Test
+    void boundedNotEqualsProducesInexactEnvelope()
+    {
+        // (BETWEEN A AND B) AND (timestamp != T)
+        //   ->  [A, T-1] U [T+1, B]
+        // KairosDB scans [A, B] and Trino re-applies the predicate above.
+        long a = T_MS - 60_000L;
+        long b = T_MS + 60_000L;
+        Domain d = Domain.create(
+                ValueSet.ofRanges(
+                        Range.range(BIGINT, a, true, T_MS, false),
+                        Range.range(BIGINT, T_MS, false, b, true)),
+                false);
+
+        Window w = KairosdbTimestampPushdown.extractWindow(d, BIGINT).orElseThrow();
+
+        assertThat(w.startMillis()).contains(a);
+        assertThat(w.endMillis()).contains(b);
+        assertThat(w.exact()).isFalse();
     }
 
     @Test

@@ -146,16 +146,31 @@ public class KairosdbMetadata
     }
 
     /**
-     * Pushes timestamp range, tag equality / {@code IN} and
-     * {@code sampling_aggregator} predicates into KairosDB.  Anything else
-     * (expressions, dynamic filters, range queries on tags) stays as
-     * "remaining" and Trino re-evaluates it above the connector.
+     * Pushes timestamp ranges, tag equality / {@code IN} predicates and
+     * {@code sampling_aggregator} hints into KairosDB.  Pushdown is strict:
+     * a column is claimed as fully consumed only when KairosDB can natively
+     * evaluate the entire predicate.  Otherwise the predicate (or part of
+     * it) is left in {@code remainingFilter} so Trino re-applies it above
+     * the connector, while the connector may still push a wider
+     * <em>bounding</em> window to KairosDB as a fetch hint.
      *
-     * <p>All three kinds of pushdown claim the column as fully consumed
-     * even when the equivalent KairosDB query is technically a superset
-     * of the predicate.  The expected query shape is a single timestamp
-     * range plus tag equalities (plus, occasionally, sampling
-     * aggregators), so the superset case is not exercised in practice.
+     * <p>Concretely:
+     * <ul>
+     *   <li><b>Timestamp.</b>  A single, inclusive (after a 1&nbsp;ms shift
+     *       for half-open bounds) range is pushed as KairosDB's
+     *       {@code [start_absolute, end_absolute]} and claimed as
+     *       consumed.  Multi-range predicates ({@code IN}, {@code !=},
+     *       disjoint OR-of-ranges) yield a bounding hull which is pushed
+     *       as a fetch window but left residual so Trino reduces the
+     *       result set to exactly the rows the predicate admits.</li>
+     *   <li><b>Tag.</b>  Pure equality / {@code IN} predicates are pushed.
+     *       Ranges, {@code NOT IN}, {@code IS NULL}, and mixed shapes are
+     *       not expressible in a KairosDB tag filter and stay residual.</li>
+     *   <li><b>{@code sampling_aggregator}.</b>  Always claimed as consumed -
+     *       the hidden column has no underlying data for Trino to compare
+     *       against, so leaving it residual would force every row through
+     *       a filter against a non-existent value.</li>
+     * </ul>
      */
     @Override
     public Optional<ConstraintApplicationResult<ConnectorTableHandle>> applyFilter(
@@ -192,7 +207,12 @@ public class KairosdbMetadata
 
             if (KairosdbTimestampPushdown.isTimestampColumn(columnName)) {
                 window = KairosdbTimestampPushdown.extractWindow(entry.getValue(), column.getColumnType());
-                if (window.isPresent()) {
+                // Strict semantics: only release the column from Trino's
+                // residual filter when KairosDB can evaluate the predicate
+                // exactly.  Inexact bounding hulls (IN-list, !=, multi-range)
+                // are still pushed as a fetch hint via the new handle, but
+                // Trino keeps the predicate to refine the result above us.
+                if (window.isPresent() && window.get().exact()) {
                     remaining.remove(column);
                 }
                 continue;
@@ -226,9 +246,8 @@ public class KairosdbMetadata
                 continue;
             }
             tagFilters.put(originalTagName, admitted.get());
-            // Claim the tag domain as fully pushed down, even for the
-            // (unlikely) case of a string range that yielded zero
-            // concrete values.
+            // KairosDB will match exactly this set, so Trino doesn't need
+            // to re-apply the predicate above us.
             remaining.remove(column);
         }
 

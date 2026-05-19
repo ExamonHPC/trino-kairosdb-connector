@@ -13,13 +13,12 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Locks in the VARCHAR Domain -> KairosDB tag-filter value list translation:
- * <ul>
- *   <li>equality and IN both collapse to a list of admitted values;</li>
- *   <li>string-range predicates have no KairosDB equivalent and are
- *       intentionally dropped (callers still claim the column as pushed);</li>
- *   <li>ALL / NONE domains do not produce a tag filter.</li>
- * </ul>
+ * Locks in the strict VARCHAR Domain -> KairosDB tag-filter translation:
+ * the method returns a non-empty value list only when the entire domain
+ * can be expressed as a pure equality / {@code IN} predicate.  Any
+ * non-singleton range, blacklist set, {@code NULL} admission, or mixed
+ * shape returns {@link Optional#empty()} so the caller leaves the
+ * predicate in {@code remainingFilter} for Trino to re-evaluate.
  */
 final class TestKairosdbTagPushdown
 {
@@ -51,39 +50,39 @@ final class TestKairosdbTagPushdown
     }
 
     @Test
-    void stringRangePredicateIsDroppedSilently()
+    void stringRangePredicateIsNotPushed()
     {
-        // host > 'm' AND host < 'p'  -- KairosDB has no string-range filter,
-        // so we yield an empty admitted list.  The caller still claims the
-        // tag column as fully pushed even when no concrete values were
-        // extracted.
+        // host > 'm' AND host < 'p' - KairosDB has no string-range filter,
+        // so the whole domain must stay residual.
         Domain d = Domain.create(
                 ValueSet.ofRanges(Range.range(VARCHAR,
                         Slices.utf8Slice("m"), false,
                         Slices.utf8Slice("p"), false)),
                 false);
 
-        Optional<List<String>> values = KairosdbTagPushdown.extractAdmittedValues(d);
-
-        // We recognise the domain shape; the list is empty because no concrete
-        // values came out of the range.
-        assertThat(values).isPresent();
-        assertThat(values.get()).isEmpty();
+        assertThat(KairosdbTagPushdown.extractAdmittedValues(d)).isEmpty();
     }
 
     @Test
-    void allAndNoneDomainsAreNotPushed()
+    void notEqualsIsNotPushed()
     {
-        assertThat(KairosdbTagPushdown.extractAdmittedValues(Domain.all(VARCHAR))).isEmpty();
-        assertThat(KairosdbTagPushdown.extractAdmittedValues(Domain.none(VARCHAR))).isEmpty();
+        // host != 'foo' - represented as two open ranges, neither singleton.
+        Domain d = Domain.create(
+                ValueSet.ofRanges(
+                        Range.lessThan(VARCHAR, Slices.utf8Slice("foo")),
+                        Range.greaterThan(VARCHAR, Slices.utf8Slice("foo"))),
+                false);
+
+        assertThat(KairosdbTagPushdown.extractAdmittedValues(d)).isEmpty();
     }
 
     @Test
-    void mixedEqualityAndRangeKeepsTheEqualityOnly()
+    void mixedEqualityAndRangeIsNotPushed()
     {
-        // host = 'n01' OR host BETWEEN 'x' AND 'z'  (non-overlapping with 'n01').
-        // Only 'n01' survives because the range portion has no KairosDB
-        // equivalent and is dropped.
+        // host = 'n01' OR host BETWEEN 'x' AND 'z'.  Even though the equality
+        // part is expressible, the range part is not, so the whole predicate
+        // must stay residual - claiming partial pushdown would silently drop
+        // the range portion.
         Domain d = Domain.create(
                 ValueSet.ofRanges(
                         Range.equal(VARCHAR, Slices.utf8Slice("n01")),
@@ -92,8 +91,38 @@ final class TestKairosdbTagPushdown
                                 Slices.utf8Slice("z"), false)),
                 false);
 
-        List<String> values = KairosdbTagPushdown.extractAdmittedValues(d).orElseThrow();
+        assertThat(KairosdbTagPushdown.extractAdmittedValues(d)).isEmpty();
+    }
 
-        assertThat(values).containsExactly("n01");
+    @Test
+    void isNullIsNotPushed()
+    {
+        // host IS NULL - tag values in KairosDB are never NULL.
+        assertThat(KairosdbTagPushdown.extractAdmittedValues(Domain.onlyNull(VARCHAR))).isEmpty();
+    }
+
+    @Test
+    void isNotNullIsNotPushed()
+    {
+        // host IS NOT NULL - admits every value; not a finite set match.
+        assertThat(KairosdbTagPushdown.extractAdmittedValues(Domain.notNull(VARCHAR))).isEmpty();
+    }
+
+    @Test
+    void equalityOrNullIsNotPushed()
+    {
+        // host = 'n01' OR host IS NULL - mixed with NULL admission.
+        Domain d = Domain.create(
+                ValueSet.of(VARCHAR, Slices.utf8Slice("n01")),
+                true);
+
+        assertThat(KairosdbTagPushdown.extractAdmittedValues(d)).isEmpty();
+    }
+
+    @Test
+    void allAndNoneDomainsAreNotPushed()
+    {
+        assertThat(KairosdbTagPushdown.extractAdmittedValues(Domain.all(VARCHAR))).isEmpty();
+        assertThat(KairosdbTagPushdown.extractAdmittedValues(Domain.none(VARCHAR))).isEmpty();
     }
 }

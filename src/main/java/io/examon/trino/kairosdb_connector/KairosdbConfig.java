@@ -92,7 +92,7 @@ public class KairosdbConfig
 
     @Config("kairosdb.timestamp.default-start-hours")
     @LegacyConfig("timestamp.default.start.hours")
-    @ConfigDescription("Default look-back window (hours) when a query does not constrain the timestamp")
+    @ConfigDescription("Look-back window (hours) when the query has no lower-bound timestamp predicate (no predicate, or upper-bound only)")
     public KairosdbConfig setDefaultStartHours(int defaultStartHours)
     {
         this.defaultStartHours = defaultStartHours;
