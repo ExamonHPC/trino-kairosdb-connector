@@ -137,9 +137,76 @@ docker build -t trino-kairosdb:local .
 ```
 
 Two-stage build: the first stage compiles and shades the jar, the second
-stage starts from `trinodb/trino:476` and copies the jar into
-`/usr/lib/trino/plugin/kairosdb/`. Useful for CI artefacts and parity
-checks but unnecessary for the iterative dev loop above.
+stage starts from `trinodb/trino:<TRINO_VERSION>` and copies the jar into
+`/usr/lib/trino/plugin/kairosdb/`. The Trino version is a build arg
+(default `476`); both the maven build and the runtime base image track it:
+
+```bash
+docker build --build-arg TRINO_VERSION=479 -t trino-kairosdb:trino479 .
+```
+
+Useful for CI artefacts and parity checks but unnecessary for the iterative
+dev loop above.
+
+## Releasing
+
+A release is **one artifact built and tested against one exact Trino
+version** - Trino guarantees no cross-version SPI stability, so each Trino
+version needs its own build. Artifacts for a connector version `V` (from
+`pom.xml`) and Trino version `N` are named:
+
+| Artifact            | Pattern                               | Example                                   |
+|---------------------|---------------------------------------|-------------------------------------------|
+| GitHub Release tag  | `<V>-trino<N>`                        | `3.0.0-rc1-trino479`                      |
+| Plugin jar          | `kairosdb-connector-<V>-trino<N>.jar` | `kairosdb-connector-3.0.0-rc1-trino479.jar` |
+| GHCR image          | `…:trino<N>`, `…:<V>-trino<N>`, `…:latest` | `…:trino479`                         |
+
+`:latest` (and the GitHub "Latest" flag) only ever points at the **newest**
+released Trino version, so back-building an older one never demotes a newer
+release.
+
+### Via GitHub Actions (recommended)
+
+The [`release.yml`](../.github/workflows/release.yml) workflow builds, runs
+unit + integration tests, and - only if green - publishes the jar to a
+GitHub Release and the image to GHCR. It must exist on the default branch
+for the dispatch button to appear.
+
+```bash
+# Build/test/publish for a specific Trino version (e.g. a team still on 479):
+gh workflow run release.yml -f trino_version=479
+# Empty trino_version uses the value pinned in pom.xml.
+# Or: Actions tab -> "Release" -> Run workflow.
+```
+
+New Trino releases are picked up automatically: the
+[`trino-watcher.yml`](../.github/workflows/trino-watcher.yml) workflow polls
+`trinodb/trino` daily and auto-runs the release for any newer version (or
+opens a `trino-compat` issue if the build fails).
+
+### Manual / local
+
+When you need an artifact without Actions (air-gapped, ad-hoc), reproduce
+what the workflow does:
+
+```bash
+# 1. Build + test the jar against the target Trino version.
+scripts/build.sh -Dtrino.version=479 -Pintegration verify
+#    Shaded jar lands at target/kairosdb-connector-<V>.jar.
+#    (Add -Dtest=... or drop -Pintegration to skip the Testcontainers suite.)
+
+# 2. Optional: build the self-contained runtime image for that version.
+docker build --build-arg TRINO_VERSION=479 -t trino-kairosdb:trino479 .
+```
+
+To match the workflow's artifact naming, stamp the Trino version into the
+version before packaging:
+
+```bash
+scripts/build.sh versions:set -DnewVersion=3.0.0-rc1-trino479 -DgenerateBackupPoms=false
+scripts/build.sh -Dtrino.version=479 -Pintegration verify
+# -> target/kairosdb-connector-3.0.0-rc1-trino479.jar
+```
 
 ## Teardown
 
