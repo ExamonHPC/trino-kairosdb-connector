@@ -7,9 +7,9 @@ name: CI
 # pull a few hundred MB and take longer.
 on:
   push:
-    branches: [master]
+    branches: [master, 'release/trino-*']
   pull_request:
-    branches: [master]
+    branches: [master, 'release/trino-*']
 
 # Cancel superseded runs on the same ref to save runner minutes.
 concurrency:

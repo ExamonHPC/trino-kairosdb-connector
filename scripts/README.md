@@ -218,6 +218,44 @@ scripts/build.sh -Dtrino.version=479 -Pintegration verify
 # -> target/kairosdb-connector-3.0.0-rc1-trino479.jar
 ```
 
+### Maintaining release branches
+
+`master` always holds the newest supported Trino version. A team that can't
+upgrade Trino in lockstep needs fixes on an older line, so each version we keep
+supporting lives on its own long-lived `release/trino-<N>` branch. Both `ci.yml`
+and `release.yml` run on `release/trino-*` branches, so a branch builds, tests
+and publishes its own `…-trino<N>` artifacts independently of `master`.
+
+**Cut a release branch when advancing `master`.** Just before adopting a newer
+Trino (i.e. before merging the watcher's bump PR), snapshot the outgoing line:
+
+```bash
+git checkout master
+git pull
+git checkout -b release/trino-479      # the version master currently pins
+git push -u origin release/trino-479
+# then let master move on to the new version via the watcher PR
+```
+
+From then on `release/trino-479` is the home of the 479 line; protect it with
+the same required-CI rule as `master`.
+
+**Ship a fix to a supported older line (backport).**
+
+1. Land the fix on `master` as usual.
+2. Add the label `backport release/trino-479` to that PR (before or after
+   merge). On merge, [`backport.yml`](../.github/workflows/backport.yml) opens a
+   PR that cherry-picks it onto `release/trino-479`.
+3. On that backport PR, **bump the connector version** (the project `<version>`
+   in `pom.xml`, e.g. `3.0.0-rc1` → `3.0.0-rc2`) — releases are immutable, so a
+   new artifact needs a new `…-trino479` tag.
+4. Merge it. `release.yml` on `release/trino-479` publishes
+   `kairosdb-connector-3.0.0-rc2-trino479.jar` (and GHCR `:trino479`). The
+   `:latest` tag is untouched because 479 is no longer the newest line.
+
+**Dropping support.** When a line is end-of-life, delete its branch; existing
+artifacts stay on the Releases page, they just stop receiving fixes.
+
 ## Teardown
 
 ```bash

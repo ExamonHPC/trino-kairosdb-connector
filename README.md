@@ -290,15 +290,23 @@ GitHub Actions workflows under [`.github/workflows/`](.github/workflows/):
 | `ci.yml`            | push / PR to `master`                     | Builds the jar and runs unit tests; integration tests run on `master` and on PRs labelled `integration`.       |
 | `release.yml`       | push to `master` (version change), or `workflow_dispatch` | Builds + unit/integration-tests the pinned version, then publishes the jar to a GitHub Release and the image to GHCR. Idempotent: skips if that `…-trino<N>` release already exists. |
 | `trino-watcher.yml` | daily cron, or `workflow_dispatch`         | Detects a newer `trinodb/trino` release and opens a **draft PR** bumping `trino.version`, with a port checklist. It does not release. |
+| `backport.yml`      | a merged PR labelled `backport release/trino-<N>` | Cherry-picks the PR onto that release branch so a fix can ship to an older still-supported Trino line. |
 
-The supported Trino version is the one pinned in `pom.xml` (`trino.version`) on
-`master` — it is controlled explicitly, **not** auto-chased. Because Trino offers
-no cross-version SPI stability (see [Compatibility](#compatibility)), adopting a
-new release is a reviewed step: the watcher proposes the bump as a draft PR, CI
-runs the port attempt, a human finishes it (deps / SPI / JDK as needed), and
-**merging the PR** publishes the new `…-trino<N>` artifacts. To (re)build a
-specific older version, dispatch the **Release** workflow with that
-`trino_version`.
+The newest supported Trino version is the one pinned in `pom.xml`
+(`trino.version`) on `master` — controlled explicitly, **not** auto-chased.
+Because Trino offers no cross-version SPI stability (see
+[Compatibility](#compatibility)), adopting a new release is a reviewed step: the
+watcher proposes the bump as a draft PR, CI runs the port attempt, a human
+finishes it (deps / SPI / JDK as needed), and **merging the PR** publishes the
+new `…-trino<N>` artifacts.
+
+**Release branches.** Older versions that are still supported live on
+`release/trino-<N>` branches, each pinned to its Trino version and publishing
+its own `…-trino<N>` artifacts (the `latest` tag always tracks the newest line).
+Cut such a branch from `master` *just before* advancing `master` to a newer
+Trino; ship fixes by merging to `master` then labelling the PR
+`backport release/trino-<N>`. Full procedure in
+[`scripts/README.md`](scripts/README.md#maintaining-release-branches).
 
 ## Compatibility
 

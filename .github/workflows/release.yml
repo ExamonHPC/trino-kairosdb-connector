@@ -11,7 +11,9 @@ name: Release
 # release tag.
 on:
   push:
-    branches: [master]
+    # master publishes the newest supported version; release/trino-<N> branches
+    # publish (and re-publish, after a connector version bump) their own line.
+    branches: [master, 'release/trino-*']
     paths:
       - pom.xml
       - 'src/**'
