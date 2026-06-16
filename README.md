@@ -285,23 +285,26 @@ Dev stack documented in [`scripts/README.md`](scripts/README.md).
 
 GitHub Actions workflows under [`.github/workflows/`](.github/workflows/):
 
-| Workflow            | Trigger                                  | What it does                                                                                                   |
-|---------------------|------------------------------------------|----------------------------------------------------------------------------------------------------------------|
-| `ci.yml`            | push / PR to `master`                    | Builds the jar and runs unit tests; integration tests run on `master` and on PRs labelled `integration`.       |
-| `release.yml`       | `workflow_dispatch`, or called by watcher | Builds + unit/integration-tests against one Trino version, then publishes the jar to a GitHub Release and the image to GHCR. Reusable. |
-| `trino-watcher.yml` | daily cron, or `workflow_dispatch`        | Detects a newer `trinodb/trino` release, builds/tests against it, auto-publishes if green, opens a `trino-compat` issue if not. |
+| Workflow            | Trigger                                   | What it does                                                                                                   |
+|---------------------|-------------------------------------------|----------------------------------------------------------------------------------------------------------------|
+| `ci.yml`            | push / PR to `master`                     | Builds the jar and runs unit tests; integration tests run on `master` and on PRs labelled `integration`.       |
+| `release.yml`       | push to `master` (version change), or `workflow_dispatch` | Builds + unit/integration-tests the pinned version, then publishes the jar to a GitHub Release and the image to GHCR. Idempotent: skips if that `…-trino<N>` release already exists. |
+| `trino-watcher.yml` | daily cron, or `workflow_dispatch`         | Detects a newer `trinodb/trino` release and opens a **draft PR** bumping `trino.version`, with a port checklist. It does not release. |
 
-Because Trino offers no cross-version SPI stability (see
-[Compatibility](#compatibility)), the watcher follows a **latest-only rolling**
-model: it always chases the newest Trino release and produces a tested artifact
-named `…-trino<N>` for it. To (re)build a specific version manually, run the
-**Release** workflow from the Actions tab with that `trino_version`.
+The supported Trino version is the one pinned in `pom.xml` (`trino.version`) on
+`master` — it is controlled explicitly, **not** auto-chased. Because Trino offers
+no cross-version SPI stability (see [Compatibility](#compatibility)), adopting a
+new release is a reviewed step: the watcher proposes the bump as a draft PR, CI
+runs the port attempt, a human finishes it (deps / SPI / JDK as needed), and
+**merging the PR** publishes the new `…-trino<N>` artifacts. To (re)build a
+specific older version, dispatch the **Release** workflow with that
+`trino_version`.
 
 ## Compatibility
 
 | Component              | Tested with                                        | Notes                                                                                                                                                  |
 |------------------------|----------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Trino                  | **479 and newer** (per-release artifacts)          | Trino guarantees no cross-version SPI stability, so each release is built and tested against one exact Trino version. CI tracks new Trino releases and publishes a matching artifact tagged `…-trino<N>` (jar + GHCR image) only after the test suite passes against it. Pick the artifact matching your Trino version; to target one not yet published, change `trino.version` in `pom.xml` and rebuild, or run the **Release** workflow with that version. |
+| Trino                  | **479** (currently supported)                      | Trino guarantees no cross-version SPI stability, so each release is built and tested against one exact Trino version. The supported version is pinned in `pom.xml` and advanced deliberately via a reviewed PR (see [CI & releases](#continuous-integration--releases)). Each supported version is published as a `…-trino<N>` artifact (jar + GHCR image); pick the one matching your Trino. Older artifacts remain on the Releases page but only the pinned version receives fixes. |
 | KairosDB               | **1.2.x** (1.2.2 in CI via `examonhpc/kairosdb`)   | Any KairosDB exposing the `/api/v1/metricnames`, `/api/v1/datapoints/query`, and `/api/v1/datapoints/query/tags` endpoints should work.                |
 | JDK (build)            | **25**                                             | Required by `mvn package` (Trino 479+ targets Java 25).                                                                                                                             |
 | OS (build / runtime)   | Linux x86_64, Linux arm64, macOS arm64             | Inherited from Trino and the (pure-Java, native-free) bundled dependencies.                                                                            |

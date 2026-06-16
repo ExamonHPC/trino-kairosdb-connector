@@ -167,22 +167,32 @@ release.
 
 ### Via GitHub Actions (recommended)
 
-The [`release.yml`](../.github/workflows/release.yml) workflow builds, runs
-unit + integration tests, and - only if green - publishes the jar to a
-GitHub Release and the image to GHCR. It must exist on the default branch
-for the dispatch button to appear.
+The supported Trino version is the one pinned in `pom.xml` (`trino.version`)
+on `master`. The normal flow is hands-off after review:
+
+1. [`trino-watcher.yml`](../.github/workflows/trino-watcher.yml) polls
+   `trinodb/trino` daily and, when a newer version appears, opens a **draft
+   PR** bumping `trino.version` with a port checklist. It does not release.
+2. Finish the port on that branch (deps / SPI / JDK as CI reveals) until CI
+   is green, then merge.
+3. The merge changes `pom.xml` on `master`, which triggers
+   [`release.yml`](../.github/workflows/release.yml): it builds, runs
+   unit + integration tests, and - only if green - publishes the jar to a
+   GitHub Release and the image to GHCR. It is idempotent (skips if that
+   `…-trino<N>` release already exists), so it never republishes a version.
+
+To back-build a specific older Trino version (e.g. for a team that hasn't
+upgraded), dispatch the Release workflow directly:
 
 ```bash
-# Build/test/publish for a specific Trino version (e.g. a team still on 479):
 gh workflow run release.yml -f trino_version=479
 # Empty trino_version uses the value pinned in pom.xml.
 # Or: Actions tab -> "Release" -> Run workflow.
 ```
 
-New Trino releases are picked up automatically: the
-[`trino-watcher.yml`](../.github/workflows/trino-watcher.yml) workflow polls
-`trinodb/trino` daily and auto-runs the release for any newer version (or
-opens a `trino-compat` issue if the build fails).
+> Releases are immutable. To re-cut for the same Trino version after a fix,
+> bump the connector version (the project `<version>` in `pom.xml`) so the
+> `…-trino<N>` tag is new.
 
 ### Manual / local
 

@@ -1,116 +1,78 @@
 name: Trino upstream watcher
 
-# Watches trinodb/trino for new releases. When a version newer than our latest
-# published artifact appears, it builds + tests the connector against it (via
-# the reusable Release workflow) and, if green, publishes a new release.
-# If the tests fail (an SPI break), it opens a tracking issue instead.
-#
-# Latest-only rolling model: we only ever chase the newest Trino release.
+# Watches trinodb/trino for new releases. The *supported* Trino version is the
+# one pinned in pom.xml (`trino.version`) on master - we control it explicitly,
+# we do not auto-chase upstream. When a newer Trino appears, this workflow opens
+# a DRAFT pull request that bumps the pin, and lets CI + a human do the port
+# (which, in practice, also needs dependency re-pins / SPI fixes / a JDK bump).
+# Merging that PR is the decision to adopt; the Release workflow then publishes.
 on:
   schedule:
-    # Daily at 06:17 UTC. Trino releases roughly every 1-2 months, so a daily
-    # poll picks up a new version within a day at negligible cost (one API call).
-    - cron: '17 6 * * *'
+    - cron: '17 6 * * *'   # daily; upstream releases every ~1-2 months
   workflow_dispatch:
-    inputs:
-      trino_version:
-        description: 'Force a build of a specific Trino version (e.g. 481). Empty = auto-detect newest.'
-        type: string
-        required: false
-        default: ''
 
 permissions:
-  contents: read
+  contents: write          # push the bump branch
+  pull-requests: write     # open the draft PR
 
 jobs:
-  detect:
-    name: Detect new Trino version
+  propose-bump:
+    name: Propose Trino bump
     runs-on: ubuntu-latest
-    outputs:
-      should_release: ${{ steps.check.outputs.should_release }}
-      trino_version: ${{ steps.check.outputs.trino_version }}
     steps:
-      - name: Compare upstream vs published
+      - uses: actions/checkout@v4
+
+      - name: Compare upstream vs the pinned version
         id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          FORCED: ${{ inputs.trino_version }}
         run: |
           set -euo pipefail
-
-          if [ -n "$FORCED" ]; then
-            echo "Forced build requested for Trino ${FORCED}"
-            echo "trino_version=${FORCED}" >> "$GITHUB_OUTPUT"
-            echo "should_release=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # Newest upstream Trino release (bare integer tag, e.g. 481).
           latest_raw="$(gh api repos/trinodb/trino/releases/latest --jq '.tag_name')"
           latest="$(echo "$latest_raw" | grep -oE '[0-9]+' | head -n1)"
-
-          # Highest Trino version we have already published, parsed from our
-          # release tags (`<connector>-trino<N>`); 0 if we have none yet.
-          current="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" \
-            --jq '[.[].tag_name | select(test("trino[0-9]+")) | capture("trino(?<n>[0-9]+)").n | tonumber] | max // 0')"
-
-          echo "Latest upstream Trino: ${latest:-unknown} | latest published: ${current}"
-
-          if [ -n "$latest" ] && [ "$latest" -gt "$current" ]; then
-            echo "New Trino ${latest} available -> will release."
-            echo "trino_version=${latest}" >> "$GITHUB_OUTPUT"
-            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          pinned="$(grep -oE '<trino.version>[0-9]+</trino.version>' pom.xml | grep -oE '[0-9]+')"
+          echo "Pinned (supported): ${pinned} | latest upstream: ${latest:-unknown}"
+          if [ -n "$latest" ] && [ "$latest" -gt "$pinned" ]; then
+            echo "newer=true" >> "$GITHUB_OUTPUT"
           else
-            echo "Already up to date; nothing to release."
-            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "newer=false" >> "$GITHUB_OUTPUT"
           fi
+          echo "latest=${latest}" >> "$GITHUB_OUTPUT"
+          echo "pinned=${pinned}" >> "$GITHUB_OUTPUT"
 
-  release:
-    name: Release for Trino ${{ needs.detect.outputs.trino_version }}
-    needs: detect
-    if: needs.detect.outputs.should_release == 'true'
-    uses: ./.github/workflows/release.yml
-    with:
-      trino_version: ${{ needs.detect.outputs.trino_version }}
-    permissions:
-      contents: write
-      packages: write
-    secrets: inherit
-
-  on-failure:
-    name: File incompatibility issue
-    needs: [detect, release]
-    # Only when we actually attempted a release and it failed (likely SPI break).
-    if: always() && needs.detect.outputs.should_release == 'true' && needs.release.result == 'failure'
-    runs-on: ubuntu-latest
-    permissions:
-      issues: write
-    steps:
-      - name: Open or update tracking issue
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TRINO_VERSION: ${{ needs.detect.outputs.trino_version }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      - name: Bump trino.version in pom.xml
+        if: steps.check.outputs.newer == 'true'
         run: |
           set -euo pipefail
-          title="Connector incompatible with Trino ${TRINO_VERSION}"
+          sed -i "s|<trino.version>[0-9]\+</trino.version>|<trino.version>${{ steps.check.outputs.latest }}</trino.version>|" pom.xml
+          grep -n '<trino.version>' pom.xml
 
-          # Avoid filing a duplicate on the next daily poll.
-          existing="$(gh issue list --state open --search "in:title \"${title}\"" --json number --jq 'length')"
-          if [ "$existing" != "0" ]; then
-            echo "Tracking issue already open; skipping."
-            exit 0
-          fi
+      - name: Open / update draft PR
+        if: steps.check.outputs.newer == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          # NOTE: PRs created with the default GITHUB_TOKEN do NOT trigger the CI
+          # workflow. Provide a fine-grained PAT or GitHub App token as the
+          # TRINO_BUMP_TOKEN secret so CI runs the port attempt automatically;
+          # otherwise close/reopen the PR once to kick CI.
+          token: ${{ secrets.TRINO_BUMP_TOKEN || github.token }}
+          branch: chore/trino-${{ steps.check.outputs.latest }}
+          draft: true
+          commit-message: "chore: bump Trino ${{ steps.check.outputs.pinned }} -> ${{ steps.check.outputs.latest }}"
+          title: "Adopt Trino ${{ steps.check.outputs.latest }}"
+          labels: trino-bump
+          body: |
+            Upstream released **Trino ${{ steps.check.outputs.latest }}** (currently supported: ${{ steps.check.outputs.pinned }}).
 
-          # Ensure the label exists (idempotent).
-          gh label create trino-compat --color B60205 --description "Trino version compatibility" 2>/dev/null || true
+            This draft bumps `trino.version`. Trino offers no cross-version SPI
+            stability, so finish the port on this branch before merging - the same
+            playbook every bump tends to need:
 
-          {
-            printf 'The automated build against **Trino %s** failed, so no release was published.\n\n' "$TRINO_VERSION"
-            printf 'This usually means an SPI change in Trino %s requires connector updates.\n\n' "$TRINO_VERSION"
-            printf -- '- Failing run: %s\n' "$RUN_URL"
-            printf -- '- Reproduce locally: `mvn -B -Dtrino.version=%s -Pintegration verify`\n\n' "$TRINO_VERSION"
-            printf 'Once fixed, re-run the **Release** workflow with `trino_version=%s`.\n' "$TRINO_VERSION"
-          } > issue-body.md
+            - [ ] CI is green (`mvn -Pintegration verify`)
+            - [ ] JDK bump if a `class file version` / `UnsupportedClassVersionError` appears
+            - [ ] Re-pin any dependency the Trino BOM stopped managing (compile/resolve errors)
+            - [ ] Port SPI / plugin-toolkit API changes (compile errors)
+            - [ ] Update version references in README / Dockerfile / docker-compose
 
-          gh issue create --title "$title" --label "trino-compat" --body-file issue-body.md
+            Merging this PR adopts ${{ steps.check.outputs.latest }} as the supported
+            version; the Release workflow then publishes the `…-trino${{ steps.check.outputs.latest }}` artifacts.
