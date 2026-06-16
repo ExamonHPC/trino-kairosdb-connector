@@ -1,0 +1,88 @@
+name: Release
+
+# Publishes one connector × Trino "cell" from its release branch.
+#
+# Push a branch named `release/v<X>-trino<Y>` whose pom pins the connector
+# version X, `trino.version` Y, and the `java.version` that Trino Y needs.
+# This builds + tests it on the matching JDK and publishes a GitHub Release
+# tagged `v<X>-trino<Y>` with the single shaded jar attached.
+#
+# master is the leading edge and never publishes here.
+on:
+  push:
+    branches: ['release/v*-trino*']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # create the GitHub Release
+
+jobs:
+  release:
+    name: Build, test & publish cell
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read target JDK from pom
+        id: jv
+        # The build JDK must match the Trino target (476->24, 479->25) so the
+        # emitted bytecode loads on that Trino. pom's <java.version> is the
+        # single source of truth.
+        run: echo "version=$(grep -oE '<java\.version>[0-9]+' pom.xml | grep -oE '[0-9]+')" >> "$GITHUB_OUTPUT"
+
+      - name: Set up JDK ${{ steps.jv.outputs.version }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ steps.jv.outputs.version }}
+          cache: maven
+
+      - name: Resolve tag from branch and gate on existing release
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # release/v3.0.0-rc1-trino476 -> v3.0.0-rc1-trino476
+          tag="${GITHUB_REF_NAME#release/}"
+          case "$tag" in
+            v*-trino*) ;;
+            *) echo "Branch '${GITHUB_REF_NAME}' is not a release/v<X>-trino<Y> branch; nothing to do."
+               echo "publish=false" >> "$GITHUB_OUTPUT"; exit 0 ;;
+          esac
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release ${tag} already exists - skipping (releases are immutable)."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build, unit + integration tests
+        if: steps.gate.outputs.publish == 'true'
+        # Uses the connector + trino.version pinned in this branch's pom.
+        run: mvn -B -Pintegration verify
+
+      - name: Locate shaded jar
+        if: steps.gate.outputs.publish == 'true'
+        id: jar
+        run: |
+          set -euo pipefail
+          # The shaded fat jar carries the `-trino<Y>` suffix (via shade finalName);
+          # the thin maven-jar output does not. Select the fat one explicitly.
+          jar="$(ls target/kairosdb-connector-*-trino*.jar | head -n1)"
+          test -f "$jar"
+          echo "path=${jar}" >> "$GITHUB_OUTPUT"
+          echo "Jar: ${jar}"
+
+      - name: Publish GitHub Release
+        if: steps.gate.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release create "${{ steps.gate.outputs.tag }}" \
+            "${{ steps.jar.outputs.path }}" \
+            --target "${GITHUB_REF_NAME}" \
+            --title "${{ steps.gate.outputs.tag }}" \
+            --notes "Connector built and tested against this Trino version. Loads only on that exact Trino (strict SPI version match)."
