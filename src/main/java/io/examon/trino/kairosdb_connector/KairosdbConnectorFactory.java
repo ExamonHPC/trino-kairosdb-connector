@@ -7,6 +7,7 @@ import io.trino.plugin.base.TypeDeserializerModule;
 import io.trino.spi.connector.Connector;
 import io.trino.spi.connector.ConnectorContext;
 import io.trino.spi.connector.ConnectorFactory;
+import io.trino.spi.type.TypeManager;
 
 import java.util.Map;
 
@@ -33,7 +34,10 @@ public class KairosdbConnectorFactory
         try {
             Bootstrap app = new Bootstrap(
                     new JsonModule(),
-                    new TypeDeserializerModule(context.getTypeManager()),
+                    // Since Trino 479 TypeDeserializerModule is no-arg and expects
+                    // TypeManager to already be bound in the injector, we bind it here.
+                    new TypeDeserializerModule(),
+                    binder -> binder.bind(TypeManager.class).toInstance(context.getTypeManager()),
                     new KairosdbModule(catalogName));
 
             Injector injector = app

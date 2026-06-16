@@ -6,7 +6,7 @@
 
     <groupId>io.examon.trino</groupId>
     <artifactId>kairosdb-connector</artifactId>
-    <version>3.0.0-rc1</version>
+    <version>3.0.0-rc1-trino479</version>
     <packaging>jar</packaging>
 
     <name>Trino KairosDB connector</name>
@@ -14,17 +14,55 @@
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <java.version>24</java.version>
+        <java.version>25</java.version>
         <maven.compiler.release>${java.version}</maven.compiler.release>
-        <trino.version>476</trino.version>
+        <trino.version>479</trino.version>
+        <!--
+            Pinned independently of the Trino BOM. The Trino BOM's parent (airbase)
+            no longer manages the versions we need for these two coordinates:
+              - guice: airbase manages only the `classifier=classes` artifact, not
+                the plain jar we shade, so its version must be set here. Track
+                Trino's guice (7.0.0) for runtime parity.
+              - testcontainers: a test-only dependency. Trino moved to
+                testcontainers-bom 2.x, which renamed `junit-jupiter` to
+                `testcontainers-junit-jupiter`. We pin the 1.x line so the
+                artifact names our tests use stay valid, decoupled from Trino.
+        -->
+        <dep.guice.version>7.0.0</dep.guice.version>
+        <dep.testcontainers.version>1.21.4</dep.testcontainers.version>
+        <!--
+            okhttp is our HTTP client to KairosDB, shaded into the plugin and
+            loaded in Trino's isolated plugin classloader, so its version is
+            independent of Trino. Pin it: Trino's BOM moved to the okhttp 5.x
+            line, whose `okhttp` artifact relocated the classes we use. 4.12.0
+            is the version Trino 476 shipped and the API our code is written to.
+        -->
+        <dep.okhttp.version>4.12.0</dep.okhttp.version>
     </properties>
 
     <dependencyManagement>
         <dependencies>
+            <!-- Pinned BOMs listed before trino-root so our versions win over the
+                 ones trino-root imports transitively (testcontainers, okhttp). -->
+            <dependency>
+                <groupId>com.squareup.okhttp3</groupId>
+                <artifactId>okhttp-bom</artifactId>
+                <version>${dep.okhttp.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers-bom</artifactId>
+                <version>${dep.testcontainers.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
             <!--
                 Import the Trino BOM so every dep we don't pin explicitly (airlift,
-                guice, guava, jackson, okhttp, junit, assertj, testcontainers, ...)
-                resolves to the exact version Trino 476 ships with.
+                guava, jackson, okhttp, junit, assertj, ...) resolves to the exact
+                version the targeted Trino ships with.
             -->
             <dependency>
                 <groupId>io.trino</groupId>
@@ -74,6 +112,7 @@
         <dependency>
             <groupId>com.google.inject</groupId>
             <artifactId>guice</artifactId>
+            <version>${dep.guice.version}</version>
         </dependency>
 
         <dependency>

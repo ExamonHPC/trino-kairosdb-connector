@@ -4,10 +4,10 @@
 # Override at build time to target another release, e.g.:
 #     docker build --build-arg TRINO_VERSION=481 -t trino-kairosdb:481 .
 # Declared before the first FROM so it can parameterize the runtime base image.
-ARG TRINO_VERSION=476
+ARG TRINO_VERSION=479
 
 # ---- build stage ----
-FROM maven:3.9.10-eclipse-temurin-24-alpine AS build
+FROM maven:3.9.11-eclipse-temurin-25-alpine AS build
 
 # Re-declare inside the stage to bring the global ARG into scope.
 ARG TRINO_VERSION

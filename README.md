@@ -2,8 +2,8 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Latest release](https://img.shields.io/github/v/release/ExamonHPC/trino-kairosdb-connector?label=release)](https://github.com/ExamonHPC/trino-kairosdb-connector/releases/latest)
-[![Trino](https://img.shields.io/badge/Trino-476+-blue.svg)](https://trino.io/)
-[![JDK](https://img.shields.io/badge/JDK-24-blue.svg)](https://openjdk.org/)
+[![Trino](https://img.shields.io/badge/Trino-479+-blue.svg)](https://trino.io/)
+[![JDK](https://img.shields.io/badge/JDK-25-blue.svg)](https://openjdk.org/)
 [![KairosDB](https://img.shields.io/badge/KairosDB-1.2.x-blue.svg)](https://kairosdb.github.io/)
 
 A Trino connector for the [KairosDB](https://kairosdb.github.io/) time-series
@@ -271,7 +271,7 @@ Both fall back to the catalog defaults (`kairosdb.split-size` and
 
 ## Building from source
 
-Requires JDK 24 and Maven 3.9+:
+Requires JDK 25 and Maven 3.9+:
 
 ```bash
 mvn clean package
@@ -301,9 +301,9 @@ named `…-trino<N>` for it. To (re)build a specific version manually, run the
 
 | Component              | Tested with                                        | Notes                                                                                                                                                  |
 |------------------------|----------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Trino                  | **476 and newer** (per-release artifacts)          | Trino guarantees no cross-version SPI stability, so each release is built and tested against one exact Trino version. CI tracks new Trino releases and publishes a matching artifact tagged `…-trino<N>` (jar + GHCR image) only after the test suite passes against it. Pick the artifact matching your Trino version; to target one not yet published, change `trino.version` in `pom.xml` and rebuild, or run the **Release** workflow with that version. |
+| Trino                  | **479 and newer** (per-release artifacts)          | Trino guarantees no cross-version SPI stability, so each release is built and tested against one exact Trino version. CI tracks new Trino releases and publishes a matching artifact tagged `…-trino<N>` (jar + GHCR image) only after the test suite passes against it. Pick the artifact matching your Trino version; to target one not yet published, change `trino.version` in `pom.xml` and rebuild, or run the **Release** workflow with that version. |
 | KairosDB               | **1.2.x** (1.2.2 in CI via `examonhpc/kairosdb`)   | Any KairosDB exposing the `/api/v1/metricnames`, `/api/v1/datapoints/query`, and `/api/v1/datapoints/query/tags` endpoints should work.                |
-| JDK (build)            | **24**                                             | Required by `mvn package`.                                                                                                                             |
+| JDK (build)            | **25**                                             | Required by `mvn package` (Trino 479+ targets Java 25).                                                                                                                             |
 | OS (build / runtime)   | Linux x86_64, Linux arm64, macOS arm64             | Inherited from Trino and the (pure-Java, native-free) bundled dependencies.                                                                            |
 | KairosDB storage layer | Cassandra 3.11+                                    | Any CQL-3 backend KairosDB itself can use is transparent to the connector and to SQL.                                                                  |
 

@@ -5,7 +5,7 @@ during development. They are also a complete recipe for anyone who wants
 to reproduce the dev environment without installing a JDK, Maven, Trino,
 or KairosDB on the host - the host only needs Docker.
 
-If you already have JDK 24 + Maven 3.9+ on the host, plain `mvn clean
+If you already have JDK 25 + Maven 3.9+ on the host, plain `mvn clean
 package` from the repo root works equivalently for the build itself; the
 extras here are about iterating against a live Trino + KairosDB stack.
 
@@ -38,7 +38,7 @@ extras here are about iterating against a live Trino + KairosDB stack.
 
 | Script                | What it does                                                                                  |
 |-----------------------|-----------------------------------------------------------------------------------------------|
-| `build.sh`            | Run any Maven goals inside the pinned `maven:3.9.10-eclipse-temurin-24-alpine` image.         |
+| `build.sh`            | Run any Maven goals inside the pinned `maven:3.9.11-eclipse-temurin-25-alpine` image.         |
 | `package.sh`          | Build the shaded jar and stage it into `plugin/kairosdb/` so `docker-compose` picks it up.    |
 | `redeploy.sh`         | `package.sh` + restart the dev Trino container + block until SQL is actually live.            |
 | `test-integration.sh` | Run the `@Tag("integration")` tests; spawns a real KairosDB via Testcontainers.               |
@@ -139,7 +139,7 @@ docker build -t trino-kairosdb:local .
 Two-stage build: the first stage compiles and shades the jar, the second
 stage starts from `trinodb/trino:<TRINO_VERSION>` and copies the jar into
 `/usr/lib/trino/plugin/kairosdb/`. The Trino version is a build arg
-(default `476`); both the maven build and the runtime base image track it:
+(default `479`); both the maven build and the runtime base image track it:
 
 ```bash
 docker build --build-arg TRINO_VERSION=479 -t trino-kairosdb:trino479 .
