@@ -47,6 +47,8 @@ jobs:
 
       - name: Resolve versions
         id: vers
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           TRINO_VERSION="${{ inputs.trino_version }}"
@@ -56,13 +58,29 @@ jobs:
           CONNECTOR_VERSION="$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)"
           RELEASE_VERSION="${CONNECTOR_VERSION}-trino${TRINO_VERSION}"
           IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+
+          # Is this the newest Trino we've ever released? Only then should it own
+          # the rolling `latest` pointers. This lets us back-build an older Trino
+          # (e.g. for a team still on 479) without demoting a newer release.
+          highest="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" \
+            --jq '[.[].tag_name | select(test("trino[0-9]+")) | capture("trino(?<n>[0-9]+)").n | tonumber] | max // 0')"
+          if [ "$TRINO_VERSION" -ge "$highest" ]; then IS_LATEST=true; else IS_LATEST=false; fi
+
           {
             echo "trino_version=${TRINO_VERSION}"
             echo "connector_version=${CONNECTOR_VERSION}"
             echo "release_version=${RELEASE_VERSION}"
             echo "image=${IMAGE}"
+            echo "is_latest=${IS_LATEST}"
+            # Newline-delimited tag list for build-push-action; `:latest` only
+            # when this is the newest released Trino version.
+            echo "image_tags<<TAGS_EOF"
+            echo "${IMAGE}:trino${TRINO_VERSION}"
+            echo "${IMAGE}:${RELEASE_VERSION}"
+            [ "$IS_LATEST" = true ] && echo "${IMAGE}:latest"
+            echo "TAGS_EOF"
           } >> "$GITHUB_OUTPUT"
-          echo "Building connector ${CONNECTOR_VERSION} against Trino ${TRINO_VERSION} -> ${RELEASE_VERSION}"
+          echo "Building connector ${CONNECTOR_VERSION} against Trino ${TRINO_VERSION} -> ${RELEASE_VERSION} (is_latest=${IS_LATEST}, highest released=${highest})"
 
       - name: Stamp release version into the pom
         # Embeds the Trino version in the artifact name, e.g.
@@ -101,18 +119,17 @@ jobs:
           push: true
           build-args: |
             TRINO_VERSION=${{ steps.vers.outputs.trino_version }}
-          # `latest` tracks the newest released build (latest-only rolling model).
-          tags: |
-            ${{ steps.vers.outputs.image }}:trino${{ steps.vers.outputs.trino_version }}
-            ${{ steps.vers.outputs.image }}:${{ steps.vers.outputs.release_version }}
-            ${{ steps.vers.outputs.image }}:latest
+          # Tag list is computed in the resolve step; `:latest` is included only
+          # when this is the newest released Trino version (rolling model).
+          tags: ${{ steps.vers.outputs.image_tags }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.vers.outputs.release_version }}
           name: ${{ steps.vers.outputs.release_version }}
-          make_latest: true
+          # Only the newest released Trino version becomes GitHub's "Latest".
+          make_latest: ${{ steps.vers.outputs.is_latest }}
           generate_release_notes: true
           body: |
             Connector `${{ steps.vers.outputs.connector_version }}` built and tested against **Trino ${{ steps.vers.outputs.trino_version }}**.
