@@ -1,0 +1,66 @@
+name: CI
+
+# Pre-merge safety net. Builds the shaded jar and runs the unit tests on every
+# push to master and every pull request, against the trino.version currently
+# pinned in pom.xml. Integration tests (Testcontainers + a real KairosDB) run
+# on master pushes and on PRs that carry the `integration` label, since they
+# pull a few hundred MB and take longer.
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+# Cancel superseded runs on the same ref to save runner minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build & unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 24
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '24'
+          cache: maven
+
+      - name: Build and run unit tests
+        run: mvn -B clean package
+
+      - name: Upload shaded jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: kairosdb-connector-jar
+          path: target/kairosdb-connector-*.jar
+          if-no-files-found: error
+
+  integration:
+    name: Integration tests (Testcontainers)
+    runs-on: ubuntu-latest
+    # Always on master pushes; on PRs only when the `integration` label is set.
+    if: >-
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'integration')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 24
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '24'
+          cache: maven
+
+      - name: Run integration tests
+        # ubuntu-latest ships a running Docker engine, so Testcontainers can
+        # spawn examonhpc/kairosdb directly.
+        run: mvn -B -Pintegration verify

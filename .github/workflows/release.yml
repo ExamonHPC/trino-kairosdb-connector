@@ -1,0 +1,129 @@
+name: Release
+
+# Build, test and publish the connector for a single Trino version.
+#
+# Reusable: the `trino-watcher` workflow calls this with the newly detected
+# Trino version. Also runnable by hand from the Actions tab (workflow_dispatch)
+# to (re)cut a release for a specific version.
+#
+# A release is produced ONLY if unit + integration tests pass against the
+# requested Trino version. Artifacts:
+#   - GitHub Release tagged `<connector-version>-trino<N>`, with the shaded jar.
+#   - GHCR image ghcr.io/<owner>/<repo> tagged `:trino<N>`, the full release
+#     version, and `:latest`.
+on:
+  workflow_call:
+    inputs:
+      trino_version:
+        description: 'Trino version to build against (e.g. 481). Empty = use pom.xml.'
+        type: string
+        required: false
+        default: ''
+  workflow_dispatch:
+    inputs:
+      trino_version:
+        description: 'Trino version to build against (e.g. 481). Empty = use pom.xml.'
+        type: string
+        required: false
+        default: ''
+
+permissions:
+  contents: write   # create the GitHub Release
+  packages: write   # push the image to GHCR
+
+jobs:
+  release:
+    name: Build, test & publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 24
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '24'
+          cache: maven
+
+      - name: Resolve versions
+        id: vers
+        run: |
+          set -euo pipefail
+          TRINO_VERSION="${{ inputs.trino_version }}"
+          if [ -z "$TRINO_VERSION" ]; then
+            TRINO_VERSION="$(mvn -q -DforceStdout help:evaluate -Dexpression=trino.version)"
+          fi
+          CONNECTOR_VERSION="$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)"
+          RELEASE_VERSION="${CONNECTOR_VERSION}-trino${TRINO_VERSION}"
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          {
+            echo "trino_version=${TRINO_VERSION}"
+            echo "connector_version=${CONNECTOR_VERSION}"
+            echo "release_version=${RELEASE_VERSION}"
+            echo "image=${IMAGE}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Building connector ${CONNECTOR_VERSION} against Trino ${TRINO_VERSION} -> ${RELEASE_VERSION}"
+
+      - name: Stamp release version into the pom
+        # Embeds the Trino version in the artifact name, e.g.
+        # kairosdb-connector-3.0.0-rc1-trino481.jar. The same pom is used by the
+        # Docker build below so the image carries the matching jar.
+        run: mvn -B versions:set -DnewVersion=${{ steps.vers.outputs.release_version }} -DgenerateBackupPoms=false
+
+      - name: Build, unit + integration tests
+        # This is the release gate: a non-zero exit here means the connector is
+        # not compatible with this Trino version and nothing is published.
+        run: mvn -B -Dtrino.version=${{ steps.vers.outputs.trino_version }} -Pintegration verify
+
+      - name: Locate shaded jar
+        id: jar
+        run: |
+          set -euo pipefail
+          jar="$(ls target/kairosdb-connector-*.jar | grep -v '/original-' | head -n1)"
+          test -n "$jar"
+          echo "path=${jar}" >> "$GITHUB_OUTPUT"
+          echo "Shaded jar: ${jar}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image to GHCR
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          build-args: |
+            TRINO_VERSION=${{ steps.vers.outputs.trino_version }}
+          # `latest` tracks the newest released build (latest-only rolling model).
+          tags: |
+            ${{ steps.vers.outputs.image }}:trino${{ steps.vers.outputs.trino_version }}
+            ${{ steps.vers.outputs.image }}:${{ steps.vers.outputs.release_version }}
+            ${{ steps.vers.outputs.image }}:latest
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.vers.outputs.release_version }}
+          name: ${{ steps.vers.outputs.release_version }}
+          make_latest: true
+          generate_release_notes: true
+          body: |
+            Connector `${{ steps.vers.outputs.connector_version }}` built and tested against **Trino ${{ steps.vers.outputs.trino_version }}**.
+
+            **Plugin jar:** attached below — drop into `<trino>/plugin/kairosdb/`.
+
+            **Docker image:**
+            ```
+            docker pull ${{ steps.vers.outputs.image }}:trino${{ steps.vers.outputs.trino_version }}
+            ```
+
+            This artifact is only guaranteed to work on Trino ${{ steps.vers.outputs.trino_version }};
+            see the README compatibility notes.
+          files: ${{ steps.jar.outputs.path }}

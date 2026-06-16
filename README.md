@@ -1,7 +1,8 @@
 # trino-kairosdb-connector
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Trino](https://img.shields.io/badge/Trino-476-blue.svg)](https://trino.io/)
+[![Latest release](https://img.shields.io/github/v/release/ExamonHPC/trino-kairosdb-connector?label=release)](https://github.com/ExamonHPC/trino-kairosdb-connector/releases/latest)
+[![Trino](https://img.shields.io/badge/Trino-476+-blue.svg)](https://trino.io/)
 [![JDK](https://img.shields.io/badge/JDK-24-blue.svg)](https://openjdk.org/)
 [![KairosDB](https://img.shields.io/badge/KairosDB-1.2.x-blue.svg)](https://kairosdb.github.io/)
 
@@ -32,8 +33,15 @@ Status: public beta / release candidate.
 
 ## Install
 
-1. Build the shaded jar (see [Building from source](#building-from-source) below) or download a release jar.
-2. Drop it under `<trino>/plugin/kairosdb/`:
+1. Download the release jar matching your Trino version from the
+   [Releases page](https://github.com/ExamonHPC/trino-kairosdb-connector/releases)
+   (artifacts are tagged `…-trino<N>`), or build the shaded jar yourself
+   (see [Building from source](#building-from-source) below). A pre-built Trino
+   image with the plugin baked in is also published to GHCR:
+   ```bash
+   docker pull ghcr.io/examonhpc/trino-kairosdb-connector:trino<N>
+   ```
+2. Drop the jar under `<trino>/plugin/kairosdb/`:
    ```text
    <trino>/plugin/kairosdb/kairosdb-connector-<version>.jar
    ```
@@ -273,11 +281,27 @@ The shaded jar lands at `target/kairosdb-connector-<version>.jar`.
 
 Dev stack documented in [`scripts/README.md`](scripts/README.md).
 
+## Continuous integration & releases
+
+GitHub Actions workflows under [`.github/workflows/`](.github/workflows/):
+
+| Workflow            | Trigger                                  | What it does                                                                                                   |
+|---------------------|------------------------------------------|----------------------------------------------------------------------------------------------------------------|
+| `ci.yml`            | push / PR to `master`                    | Builds the jar and runs unit tests; integration tests run on `master` and on PRs labelled `integration`.       |
+| `release.yml`       | `workflow_dispatch`, or called by watcher | Builds + unit/integration-tests against one Trino version, then publishes the jar to a GitHub Release and the image to GHCR. Reusable. |
+| `trino-watcher.yml` | daily cron, or `workflow_dispatch`        | Detects a newer `trinodb/trino` release, builds/tests against it, auto-publishes if green, opens a `trino-compat` issue if not. |
+
+Because Trino offers no cross-version SPI stability (see
+[Compatibility](#compatibility)), the watcher follows a **latest-only rolling**
+model: it always chases the newest Trino release and produces a tested artifact
+named `…-trino<N>` for it. To (re)build a specific version manually, run the
+**Release** workflow from the Actions tab with that `trino_version`.
+
 ## Compatibility
 
 | Component              | Tested with                                        | Notes                                                                                                                                                  |
 |------------------------|----------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Trino                  | **476**                                            | To target another release, change `trino.version` in `pom.xml` and rebuild; the SPI surface used is small and reasonably stable. |
+| Trino                  | **476 and newer** (per-release artifacts)          | Trino guarantees no cross-version SPI stability, so each release is built and tested against one exact Trino version. CI tracks new Trino releases and publishes a matching artifact tagged `…-trino<N>` (jar + GHCR image) only after the test suite passes against it. Pick the artifact matching your Trino version; to target one not yet published, change `trino.version` in `pom.xml` and rebuild, or run the **Release** workflow with that version. |
 | KairosDB               | **1.2.x** (1.2.2 in CI via `examonhpc/kairosdb`)   | Any KairosDB exposing the `/api/v1/metricnames`, `/api/v1/datapoints/query`, and `/api/v1/datapoints/query/tags` endpoints should work.                |
 | JDK (build)            | **24**                                             | Required by `mvn package`.                                                                                                                             |
 | OS (build / runtime)   | Linux x86_64, Linux arm64, macOS arm64             | Inherited from Trino and the (pure-Java, native-free) bundled dependencies.                                                                            |
