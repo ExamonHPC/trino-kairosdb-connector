@@ -6,7 +6,7 @@
 
     <groupId>io.examon.trino</groupId>
     <artifactId>kairosdb-connector</artifactId>
-    <version>3.0.0-rc1-trino479</version>
+    <version>3.0.0-rc1</version>
     <packaging>jar</packaging>
 
     <name>Trino KairosDB connector</name>
@@ -221,6 +221,10 @@
                             <goal>shade</goal>
                         </goals>
                         <configuration>
+                            <!-- Name the shaded jar after both axes: connector version and
+                                 the Trino it was built against, e.g.
+                                 kairosdb-connector-3.0.0-rc1-trino479.jar. -->
+                            <finalName>${project.artifactId}-${project.version}-trino${trino.version}</finalName>
                             <createDependencyReducedPom>false</createDependencyReducedPom>
                             <shadedArtifactAttached>false</shadedArtifactAttached>
                             <transformers>

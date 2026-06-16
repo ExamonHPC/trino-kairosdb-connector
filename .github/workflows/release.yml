@@ -1,167 +1,88 @@
 name: Release
 
-# Publishes the connector for the *supported* Trino version - the one pinned in
-# pom.xml on master. Runs when a change to master alters what would be released
-# (e.g. merging a Trino bump or a connector version change), and is idempotent:
-# if the `<connector>-trino<N>` release already exists, it does nothing. Can also
-# be dispatched manually (e.g. to back-build a specific older Trino version).
+# Publishes one connector × Trino "cell" from its release branch.
 #
-# Releases are immutable: to re-cut for the same Trino version after a fix, bump
-# the connector version in pom.xml (the project <version>), which yields a new
-# release tag.
+# Push a branch named `release/v<X>-trino<Y>` whose pom pins the connector
+# version X, `trino.version` Y, and the `java.version` that Trino Y needs.
+# This builds + tests it on the matching JDK and publishes a GitHub Release
+# tagged `v<X>-trino<Y>` with the single shaded jar attached.
+#
+# master is the leading edge and never publishes here.
 on:
   push:
-    # master publishes the newest supported version; release/trino-<N> branches
-    # publish (and re-publish, after a connector version bump) their own line.
-    branches: [master, 'release/trino-*']
-    paths:
-      - pom.xml
-      - 'src/**'
-      - Dockerfile
+    branches: ['release/v*-trino*']
   workflow_dispatch:
-    inputs:
-      trino_version:
-        description: 'Trino version to build against (e.g. 479). Empty = use pom.xml.'
-        type: string
-        required: false
-        default: ''
 
 permissions:
   contents: write   # create the GitHub Release
-  packages: write   # push the image to GHCR
 
 jobs:
-  check:
-    name: Resolve & gate
-    runs-on: ubuntu-latest
-    outputs:
-      should_publish: ${{ steps.r.outputs.should_publish }}
-      trino_version: ${{ steps.r.outputs.trino_version }}
-      connector_version: ${{ steps.r.outputs.connector_version }}
-      release_version: ${{ steps.r.outputs.release_version }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Resolve version and check whether it is already released
-        id: r
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          TRINO_VERSION="${{ inputs.trino_version }}"
-          if [ -z "$TRINO_VERSION" ]; then
-            TRINO_VERSION="$(grep -oE '<trino.version>[0-9]+</trino.version>' pom.xml | grep -oE '[0-9]+')"
-          fi
-          # The project's own <version> is the first <version> element in the pom.
-          CONNECTOR_VERSION="$(grep -oE '<version>[^<]+</version>' pom.xml | head -n1 | sed -E 's|</?version>||g')"
-          RELEASE_VERSION="${CONNECTOR_VERSION}-trino${TRINO_VERSION}"
-
-          if gh release view "$RELEASE_VERSION" >/dev/null 2>&1; then
-            echo "Release ${RELEASE_VERSION} already exists - nothing to publish."
-            echo "should_publish=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "Will publish ${RELEASE_VERSION}."
-            echo "should_publish=true" >> "$GITHUB_OUTPUT"
-          fi
-          {
-            echo "trino_version=${TRINO_VERSION}"
-            echo "connector_version=${CONNECTOR_VERSION}"
-            echo "release_version=${RELEASE_VERSION}"
-          } >> "$GITHUB_OUTPUT"
-
   release:
-    name: Build, test & publish
-    needs: check
-    if: needs.check.outputs.should_publish == 'true'
+    name: Build, test & publish cell
     runs-on: ubuntu-latest
-    env:
-      TRINO_VERSION: ${{ needs.check.outputs.trino_version }}
-      CONNECTOR_VERSION: ${{ needs.check.outputs.connector_version }}
-      RELEASE_VERSION: ${{ needs.check.outputs.release_version }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up JDK 25
+      - name: Read target JDK from pom
+        id: jv
+        # The build JDK must match the Trino target (476->24, 479->25) so the
+        # emitted bytecode loads on that Trino. pom's <java.version> is the
+        # single source of truth.
+        run: echo "version=$(grep -oE '<java\.version>[0-9]+' pom.xml | grep -oE '[0-9]+')" >> "$GITHUB_OUTPUT"
+
+      - name: Set up JDK ${{ steps.jv.outputs.version }}
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '25'
+          java-version: ${{ steps.jv.outputs.version }}
           cache: maven
 
-      - name: Compute image name and rolling tags
-        id: img
+      - name: Resolve tag from branch and gate on existing release
+        id: gate
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
-          # `latest` only ever points at the newest released Trino version, so a
-          # manual back-build of an older one never demotes a newer release.
-          highest="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" \
-            --jq '[.[].tag_name | select(test("trino[0-9]+")) | capture("trino(?<n>[0-9]+)").n | tonumber] | max // 0')"
-          if [ "$TRINO_VERSION" -ge "$highest" ]; then IS_LATEST=true; else IS_LATEST=false; fi
-          {
-            echo "image=${IMAGE}"
-            echo "is_latest=${IS_LATEST}"
-            echo "image_tags<<TAGS_EOF"
-            echo "${IMAGE}:trino${TRINO_VERSION}"
-            echo "${IMAGE}:${RELEASE_VERSION}"
-            [ "$IS_LATEST" = true ] && echo "${IMAGE}:latest"
-            echo "TAGS_EOF"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Stamp release version into the pom
-        run: mvn -B versions:set -DnewVersion="${RELEASE_VERSION}" -DgenerateBackupPoms=false
+          # release/v3.0.0-rc1-trino476 -> v3.0.0-rc1-trino476
+          tag="${GITHUB_REF_NAME#release/}"
+          case "$tag" in
+            v*-trino*) ;;
+            *) echo "Branch '${GITHUB_REF_NAME}' is not a release/v<X>-trino<Y> branch; nothing to do."
+               echo "publish=false" >> "$GITHUB_OUTPUT"; exit 0 ;;
+          esac
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release ${tag} already exists - skipping (releases are immutable)."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Build, unit + integration tests
-        # Release gate: a failure here means the connector is not compatible with
-        # this Trino version and nothing is published.
-        run: mvn -B -Dtrino.version="${TRINO_VERSION}" -Pintegration verify
+        if: steps.gate.outputs.publish == 'true'
+        # Uses the connector + trino.version pinned in this branch's pom.
+        run: mvn -B -Pintegration verify
 
       - name: Locate shaded jar
+        if: steps.gate.outputs.publish == 'true'
         id: jar
         run: |
           set -euo pipefail
-          jar="$(ls target/kairosdb-connector-*.jar | grep -v '/original-' | head -n1)"
-          test -n "$jar"
+          # The shaded fat jar carries the `-trino<Y>` suffix (via shade finalName);
+          # the thin maven-jar output does not. Select the fat one explicitly.
+          jar="$(ls target/kairosdb-connector-*-trino*.jar | head -n1)"
+          test -f "$jar"
           echo "path=${jar}" >> "$GITHUB_OUTPUT"
+          echo "Jar: ${jar}"
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push image to GHCR
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          build-args: |
-            TRINO_VERSION=${{ env.TRINO_VERSION }}
-          tags: ${{ steps.img.outputs.image_tags }}
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.RELEASE_VERSION }}
-          name: ${{ env.RELEASE_VERSION }}
-          make_latest: ${{ steps.img.outputs.is_latest }}
-          generate_release_notes: true
-          body: |
-            Connector `${{ env.CONNECTOR_VERSION }}` built and tested against **Trino ${{ env.TRINO_VERSION }}**.
-
-            **Plugin jar:** attached below — drop into `<trino>/plugin/kairosdb/`.
-
-            **Docker image:**
-            ```
-            docker pull ${{ steps.img.outputs.image }}:trino${{ env.TRINO_VERSION }}
-            ```
-
-            This artifact only loads on Trino ${{ env.TRINO_VERSION }} (the connector
-            enforces a strict SPI version match); see the README compatibility notes.
-          files: ${{ steps.jar.outputs.path }}
+      - name: Publish GitHub Release
+        if: steps.gate.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release create "${{ steps.gate.outputs.tag }}" \
+            "${{ steps.jar.outputs.path }}" \
+            --target "${GITHUB_REF_NAME}" \
+            --title "${{ steps.gate.outputs.tag }}" \
+            --notes "Connector built and tested against this Trino version. Loads only on that exact Trino (strict SPI version match)."
