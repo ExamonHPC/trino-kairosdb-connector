@@ -1,7 +1,6 @@
 # trino-kairosdb-connector
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Latest release](https://img.shields.io/github/v/release/ExamonHPC/trino-kairosdb-connector?label=release)](https://github.com/ExamonHPC/trino-kairosdb-connector/releases/latest)
 [![Trino](https://img.shields.io/badge/Trino-479+-blue.svg)](https://trino.io/)
 [![JDK](https://img.shields.io/badge/JDK-25-blue.svg)](https://openjdk.org/)
 [![KairosDB](https://img.shields.io/badge/KairosDB-1.2.x-blue.svg)](https://kairosdb.github.io/)
