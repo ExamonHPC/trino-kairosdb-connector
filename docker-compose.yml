@@ -6,7 +6,7 @@ services:
   # (For a fully self-contained production image, build the project Dockerfile
   # with `docker build .` instead.)
   trino:
-    image: trinodb/trino:476
+    image: trinodb/trino:479
     ports:
       - "8082:8080"
     volumes:

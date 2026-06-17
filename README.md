@@ -1,8 +1,9 @@
 # trino-kairosdb-connector
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Trino](https://img.shields.io/badge/Trino-476-blue.svg)](https://trino.io/)
-[![JDK](https://img.shields.io/badge/JDK-24-blue.svg)](https://openjdk.org/)
+[![Latest release](https://img.shields.io/github/v/release/ExamonHPC/trino-kairosdb-connector?label=release)](https://github.com/ExamonHPC/trino-kairosdb-connector/releases/latest)
+[![Trino](https://img.shields.io/badge/Trino-479+-blue.svg)](https://trino.io/)
+[![JDK](https://img.shields.io/badge/JDK-25-blue.svg)](https://openjdk.org/)
 [![KairosDB](https://img.shields.io/badge/KairosDB-1.2.x-blue.svg)](https://kairosdb.github.io/)
 
 A Trino connector for the [KairosDB](https://kairosdb.github.io/) time-series
@@ -32,10 +33,13 @@ Status: public beta / release candidate.
 
 ## Install
 
-1. Build the shaded jar (see [Building from source](#building-from-source) below) or download a release jar.
-2. Drop it under `<trino>/plugin/kairosdb/`:
+1. Download the release jar matching your Trino version from the
+   [Releases page](https://github.com/ExamonHPC/trino-kairosdb-connector/releases)
+   (tagged `v<connector>-trino<N>` — see the [compatibility matrix](#compatibility-matrix)),
+   or build the shaded jar yourself (see [Building from source](#building-from-source) below).
+2. Drop the jar under `<trino>/plugin/kairosdb/`:
    ```text
-   <trino>/plugin/kairosdb/kairosdb-connector-<version>.jar
+   <trino>/plugin/kairosdb/kairosdb-connector-<version>-trino<N>.jar
    ```
 3. Add a catalog file at `<trino>/etc/catalog/kairosdb.properties` -
    the [example](trino-config/catalog/kairosdb.properties) in this repo
@@ -263,7 +267,7 @@ Both fall back to the catalog defaults (`kairosdb.split-size` and
 
 ## Building from source
 
-Requires JDK 24 and Maven 3.9+:
+Requires JDK 25 and Maven 3.9+:
 
 ```bash
 mvn clean package
@@ -273,13 +277,45 @@ The shaded jar lands at `target/kairosdb-connector-<version>.jar`.
 
 Dev stack documented in [`scripts/README.md`](scripts/README.md).
 
+## Continuous integration & releases
+
+Releases follow a **per-cell** model: the connector version and the Trino
+version are independent axes, and each `(connector, Trino)` pair is built,
+tested and shipped from its own branch. The connector source only loads on the
+exact Trino it was compiled against (enforced at runtime), so there is no shared
+cross-version code — each cell is isolated.
+
+| Thing | Form | Example |
+|-------|------|---------|
+| Release branch | `release/v<X>-trino<Y>` | `release/v3.0.0-rc1-trino479` |
+| GitHub Release / tag | `v<X>-trino<Y>` | `v3.0.0-rc1-trino479` |
+| Plugin jar | `kairosdb-connector-<X>-trino<Y>.jar` | `kairosdb-connector-3.0.0-rc1-trino479.jar` |
+
+[`release.yml`](.github/workflows/release.yml) is the only workflow: pushing a
+`release/v*-trino*` branch builds + unit/integration-tests it on the JDK that
+branch's pom pins (476 → 24, 479 → 25) and publishes the GitHub Release with the
+shaded jar (jars only; idempotent — an existing release is skipped). `master` is
+the leading edge for development and never publishes.
+
+To **adopt a new Trino** or **ship a fix across Trino lines**, see the
+procedures in [`scripts/README.md`](scripts/README.md#releasing).
+
+### Compatibility matrix
+
+| Connector | Trino | JDK | Release |
+|-----------|-------|-----|---------|
+| `3.0.0-rc1` | 476 | 24 | [`v3.0.0-rc1-trino476`](https://github.com/ExamonHPC/trino-kairosdb-connector/releases/tag/v3.0.0-rc1-trino476) |
+| `3.0.0-rc1` | 479 | 25 | [`v3.0.0-rc1-trino479`](https://github.com/ExamonHPC/trino-kairosdb-connector/releases/tag/v3.0.0-rc1-trino479) |
+
+Pick the jar matching your Trino version; it will refuse to load on any other.
+
 ## Compatibility
 
 | Component              | Tested with                                        | Notes                                                                                                                                                  |
 |------------------------|----------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Trino                  | **476**                                            | To target another release, change `trino.version` in `pom.xml` and rebuild; the SPI surface used is small and reasonably stable. |
+| Trino                  | **476, 479** (per-cell releases)                   | Trino guarantees no cross-version SPI stability, so each version is built and tested against one exact Trino and shipped as its own `v<X>-trino<Y>` release (jar). Pick the one matching your Trino — see the [compatibility matrix](#compatibility-matrix). New versions are added per-cell (see [`scripts/README.md`](scripts/README.md#releasing)). |
 | KairosDB               | **1.2.x** (1.2.2 in CI via `examonhpc/kairosdb`)   | Any KairosDB exposing the `/api/v1/metricnames`, `/api/v1/datapoints/query`, and `/api/v1/datapoints/query/tags` endpoints should work.                |
-| JDK (build)            | **24**                                             | Required by `mvn package`.                                                                                                                             |
+| JDK (build)            | **25**                                             | Required by `mvn package` (Trino 479+ targets Java 25).                                                                                                                             |
 | OS (build / runtime)   | Linux x86_64, Linux arm64, macOS arm64             | Inherited from Trino and the (pure-Java, native-free) bundled dependencies.                                                                            |
 | KairosDB storage layer | Cassandra 3.11+                                    | Any CQL-3 backend KairosDB itself can use is transparent to the connector and to SQL.                                                                  |
 

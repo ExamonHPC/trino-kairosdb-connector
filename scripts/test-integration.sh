@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-readonly IMAGE="maven:3.9.10-eclipse-temurin-24-alpine"
+readonly IMAGE="maven:3.9.11-eclipse-temurin-25-alpine"
 readonly CACHE_VOLUME="kairosdb-connector-m2"
 readonly REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 

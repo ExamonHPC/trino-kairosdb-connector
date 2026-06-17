@@ -5,7 +5,7 @@ during development. They are also a complete recipe for anyone who wants
 to reproduce the dev environment without installing a JDK, Maven, Trino,
 or KairosDB on the host - the host only needs Docker.
 
-If you already have JDK 24 + Maven 3.9+ on the host, plain `mvn clean
+If you already have JDK 25 + Maven 3.9+ on the host, plain `mvn clean
 package` from the repo root works equivalently for the build itself; the
 extras here are about iterating against a live Trino + KairosDB stack.
 
@@ -38,7 +38,7 @@ extras here are about iterating against a live Trino + KairosDB stack.
 
 | Script                | What it does                                                                                  |
 |-----------------------|-----------------------------------------------------------------------------------------------|
-| `build.sh`            | Run any Maven goals inside the pinned `maven:3.9.10-eclipse-temurin-24-alpine` image.         |
+| `build.sh`            | Run any Maven goals inside the pinned `maven:3.9.11-eclipse-temurin-25-alpine` image.         |
 | `package.sh`          | Build the shaded jar and stage it into `plugin/kairosdb/` so `docker-compose` picks it up.    |
 | `redeploy.sh`         | `package.sh` + restart the dev Trino container + block until SQL is actually live.            |
 | `test-integration.sh` | Run the `@Tag("integration")` tests; spawns a real KairosDB via Testcontainers.               |
@@ -137,9 +137,90 @@ docker build -t trino-kairosdb:local .
 ```
 
 Two-stage build: the first stage compiles and shades the jar, the second
-stage starts from `trinodb/trino:476` and copies the jar into
-`/usr/lib/trino/plugin/kairosdb/`. Useful for CI artefacts and parity
-checks but unnecessary for the iterative dev loop above.
+stage starts from `trinodb/trino:<TRINO_VERSION>` and copies the jar into
+`/usr/lib/trino/plugin/kairosdb/`. The Trino version is a build arg
+(default `479`); both the maven build and the runtime base image track it:
+
+```bash
+docker build --build-arg TRINO_VERSION=479 -t trino-kairosdb:trino479 .
+```
+
+Useful for CI artefacts and parity checks but unnecessary for the iterative
+dev loop above.
+
+## Releasing
+
+Each release is **one connector version built and tested against one exact
+Trino version** — Trino has no cross-version SPI stability, so every
+`(connector, Trino)` pair is its own build, published from its own branch.
+For connector version `X` (the project `<version>` in `pom.xml`) and Trino
+version `Y`:
+
+| Thing                      | Form                                   | Example                                       |
+|----------------------------|----------------------------------------|-----------------------------------------------|
+| Release branch             | `release/v<X>-trino<Y>`                | `release/v3.0.0-rc1-trino479`                 |
+| Git tag / GitHub Release   | `v<X>-trino<Y>`                        | `v3.0.0-rc1-trino479`                         |
+| Plugin jar (release asset) | `kairosdb-connector-<X>-trino<Y>.jar`  | `kairosdb-connector-3.0.0-rc1-trino479.jar`   |
+
+Each `release/v<X>-trino<Y>` branch pins everything for its cell in `pom.xml`:
+`<version>` = `X`, `<trino.version>` = `Y`, and `<java.version>` to the JDK
+that Trino needs (476 → 24, 479 → 25). The shaded-jar name is derived from
+those via the maven-shade `finalName`, so a plain `mvn package` on the branch
+emits the correctly-named jar. `master` is the **leading edge** (latest
+connector × latest Trino) for development; it never publishes.
+
+### Publishing a cell (GitHub Actions)
+
+[`release.yml`](../.github/workflows/release.yml) runs on a push to any
+`release/v*-trino*` branch. It reads `<java.version>` from the pom and sets up
+that JDK, runs `mvn -Pintegration verify` (unit + Testcontainers integration
+tests against the pinned Trino — KairosDB is pulled from the public
+`examonhpc/kairosdb` Docker Hub image), then publishes a GitHub Release tagged
+`v<X>-trino<Y>` (derived from the branch name) with the shaded jar attached.
+It is idempotent: if that release already exists it skips, so a docs-only push
+to the branch is a no-op. Jars only — no images. So publishing is just:
+
+```bash
+git push -u origin release/v<X>-trino<Y>
+```
+
+### Add support for a new Trino version `Z`
+
+1. On `master`, set `<trino.version>=Z` and `<java.version>` to the JDK it needs.
+2. Port until `mvn -Pintegration verify` is green. Deps are pinned in `pom.xml`;
+   the only Trino-specific source is the `TypeDeserializerModule` call in
+   `KairosdbConnectorFactory`; bump the JDK if you hit `UnsupportedClassVersionError`.
+3. Cut and push the cell:
+   ```bash
+   git checkout -b release/v<X>-trino<Z>
+   git push -u origin release/v<X>-trino<Z>      # release.yml publishes v<X>-trino<Z>
+   ```
+
+### Ship a fix to one or more Trino lines
+
+A connector fix is Trino-agnostic, so it is one commit replayed per line, keeping
+the **same** new connector version `X+1` across them (differing only by `-trino<Y>`):
+
+```bash
+# author the fix on master (or the newest cell), then for each Trino line:
+git checkout release/v<X>-trino<Y>
+git cherry-pick <fix-sha>
+# bump pom <version> to X+1
+git checkout -b release/v<X+1>-trino<Y>
+git push -u origin release/v<X+1>-trino<Y>       # release.yml publishes v<X+1>-trino<Y>
+```
+
+Releases are immutable: to re-cut for the same Trino after a fix, bump the
+connector version so the `v<X+1>-trino<Y>` tag is new. Cherry-pick conflicts are
+rare and confined to that one Trino-specific file.
+
+### Build a cell locally
+
+```bash
+# on a release/v<X>-trino<Y> branch (its pom already pins X, Y and the JDK):
+scripts/build.sh clean package         # -> target/kairosdb-connector-<X>-trino<Y>.jar
+scripts/test-integration.sh            # full unit + Testcontainers integration suite
+```
 
 ## Teardown
 
