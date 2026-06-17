@@ -1,0 +1,42 @@
+name: CI
+
+# Pre-merge sanity for master: compile, build the shaded jar, and run unit tests
+# on every push to master and every PR targeting it. Integration tests are not
+# run here — they're the release gate (release.yml on the release/v*-trino*
+# cells). Master is the leading edge; the JDK is taken from its pom so this
+# tracks whatever Trino master targets (476 -> 24, 479 -> 25, ...).
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build & unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read target JDK from pom
+        id: jv
+        run: echo "version=$(grep -oE '<java\.version>[0-9]+' pom.xml | grep -oE '[0-9]+')" >> "$GITHUB_OUTPUT"
+
+      - name: Set up JDK ${{ steps.jv.outputs.version }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ steps.jv.outputs.version }}
+          cache: maven
+
+      - name: Build + unit tests
+        # `package` compiles, builds the shaded jar, and runs unit tests; the
+        # surefire config excludes the @Tag("integration") suite by default.
+        run: mvn -B clean package
