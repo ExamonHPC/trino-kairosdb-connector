@@ -3,6 +3,7 @@ package io.examon.trino.kairosdb_connector;
 import com.google.common.collect.ImmutableList;
 import io.trino.spi.connector.RecordCursor;
 import io.trino.spi.connector.RecordSet;
+import io.trino.spi.type.TimeZoneKey;
 import io.trino.spi.type.Type;
 
 import java.util.List;
@@ -16,12 +17,14 @@ public class KairosdbRecordSet
     private final KairosdbSplit split;
     private final List<KairosdbColumnHandle> columnHandles;
     private final List<Type> columnTypes;
+    private final TimeZoneKey sessionZone;
 
-    public KairosdbRecordSet(KairosdbClient client, KairosdbSplit split, List<KairosdbColumnHandle> columnHandles)
+    public KairosdbRecordSet(KairosdbClient client, KairosdbSplit split, List<KairosdbColumnHandle> columnHandles, TimeZoneKey sessionZone)
     {
         this.client = requireNonNull(client, "client is null");
         this.split = requireNonNull(split, "split is null");
         this.columnHandles = ImmutableList.copyOf(requireNonNull(columnHandles, "columnHandles is null"));
+        this.sessionZone = requireNonNull(sessionZone, "sessionZone is null");
         ImmutableList.Builder<Type> types = ImmutableList.builder();
         for (KairosdbColumnHandle handle : columnHandles) {
             types.add(handle.getColumnType());
@@ -38,6 +41,6 @@ public class KairosdbRecordSet
     @Override
     public RecordCursor cursor()
     {
-        return new KairosdbRecordCursor(client, split, columnHandles);
+        return new KairosdbRecordCursor(client, split, columnHandles, sessionZone);
     }
 }

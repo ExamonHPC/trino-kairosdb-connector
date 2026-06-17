@@ -38,6 +38,9 @@ public class KairosdbRecordSetProvider
         for (ColumnHandle column : columns) {
             projected.add((KairosdbColumnHandle) column);
         }
-        return new KairosdbRecordSet(client, kairosSplit, projected.build());
+        // Pack WITH TIME ZONE results in the session's zone (matching Trino
+        // built-ins like from_unixtime) so SET TIME ZONE localizes the display;
+        // the underlying instant is unchanged.
+        return new KairosdbRecordSet(client, kairosSplit, projected.build(), session.getTimeZoneKey());
     }
 }
