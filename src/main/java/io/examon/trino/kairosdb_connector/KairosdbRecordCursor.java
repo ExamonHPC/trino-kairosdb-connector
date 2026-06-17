@@ -7,6 +7,7 @@ import io.airlift.slice.Slices;
 import io.examon.trino.kairosdb_connector.KairosdbResponses.QueryDatapointsResponse.DataResult;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.RecordCursor;
+import io.trino.spi.type.TimeZoneKey;
 import io.trino.spi.type.Type;
 
 import java.util.Iterator;
@@ -15,7 +16,6 @@ import java.util.Map;
 
 import static io.examon.trino.kairosdb_connector.KairosdbErrorCode.KAIROSDB_PARSE_ERROR;
 import static io.trino.spi.type.DateTimeEncoding.packDateTimeWithZone;
-import static io.trino.spi.type.TimeZoneKey.UTC_KEY;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 
@@ -42,6 +42,7 @@ public class KairosdbRecordCursor
     private final KairosdbSplit split;
     private final List<KairosdbColumnHandle> columns;
     private final List<Type> columnTypes;
+    private final TimeZoneKey sessionZone;
 
     private final long readStartNanos = System.nanoTime();
     private long completedBytes;
@@ -53,11 +54,12 @@ public class KairosdbRecordCursor
     private long currentTimestampMillis;
     private Object currentValue;
 
-    public KairosdbRecordCursor(KairosdbClient client, KairosdbSplit split, List<KairosdbColumnHandle> columns)
+    public KairosdbRecordCursor(KairosdbClient client, KairosdbSplit split, List<KairosdbColumnHandle> columns, TimeZoneKey sessionZone)
     {
         this.client = requireNonNull(client, "client is null");
         this.split = requireNonNull(split, "split is null");
         this.columns = ImmutableList.copyOf(requireNonNull(columns, "columns is null"));
+        this.sessionZone = requireNonNull(sessionZone, "sessionZone is null");
         ImmutableList.Builder<Type> types = ImmutableList.builder();
         for (KairosdbColumnHandle column : columns) {
             types.add(column.getColumnType());
@@ -136,7 +138,7 @@ public class KairosdbRecordCursor
     {
         KairosdbColumnHandle column = columns.get(field);
         if (isTimestampColumn(column)) {
-            return packTimestamp(column.getColumnType(), currentTimestampMillis);
+            return packTimestamp(column.getColumnType(), currentTimestampMillis, sessionZone);
         }
         if (currentValue instanceof Number n) {
             return n.longValue();
@@ -208,14 +210,16 @@ public class KairosdbRecordCursor
         return TIMESTAMP_COLUMN.equalsIgnoreCase(column.getColumnName());
     }
 
-    private static long packTimestamp(Type type, long millis)
+    static long packTimestamp(Type type, long millis, TimeZoneKey zone)
     {
         String name = type.getDisplayName();
         if ("bigint".equals(name)) {
             return millis;
         }
         if (name.startsWith("timestamp(") && name.contains("with time zone")) {
-            return packDateTimeWithZone(millis, UTC_KEY);
+            // Same instant (epoch ms UTC), rendered in the session zone so the
+            // SQL client localizes the display under SET TIME ZONE.
+            return packDateTimeWithZone(millis, zone);
         }
         if (name.startsWith("timestamp(")) {
             // Trino timestamps without timezone are stored as microseconds.
