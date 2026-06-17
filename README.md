@@ -99,32 +99,50 @@ downstream consumers without touching the connector.
 
 ### Timestamp literals
 
-KairosDB stores datapoints as epoch milliseconds in UTC, so every
-`WHERE timestamp …` predicate resolves to a UTC range under the hood.
+KairosDB stores datapoints as epoch milliseconds in UTC; every
+`WHERE timestamp …` predicate resolves to a UTC range under the hood. How you
+write literals — and whether the **session time zone** applies — depends on
+`kairosdb.timestamp.format`. The three formats behave very differently here, so
+pick deliberately.
 
-With `kairosdb.timestamp.format=BIGINT` (default) write raw epoch
-milliseconds, e.g. `WHERE timestamp BETWEEN 1750370400000 AND 1750456800000`
+**`BIGINT` (default)** — raw epoch milliseconds; no time-zone semantics at all.
+e.g. `WHERE timestamp BETWEEN 1750370400000 AND 1750456800000`. (A predicate
+value below ~5×10⁹ is re-interpreted as epoch *seconds*; this heuristic applies
+to predicates only, not to returned values.)
 
-With `TIMESTAMP_MILLIS` or `TIMESTAMP_TZ` write SQL TIMESTAMP literals.
-Four styles cover the common cases (target instant: midnight 2025-06-20
-local Rome time, which is `2025-06-19T22:00:00Z`):
+**`TIMESTAMP_TZ` — `TIMESTAMP(3) WITH TIME ZONE` (recommended for human / local-time use).**
+The column is zone-aware, so the session zone behaves as you'd expect:
 
 | Style | Example | Notes |
 |---|---|---|
 | Pinned literal | `timestamp '2025-06-20 00:00:00 Europe/Rome'` | Self-documenting, immune to session-zone changes. |
-| Session-relative | `SET TIME ZONE 'Europe/Rome';` then `timestamp '2025-06-20 00:00:00'` | Bare literal picks up the session zone. |
+| Session-relative | `SET TIME ZONE 'Europe/Rome';` then `timestamp '2025-06-20 00:00:00'` | Bare literal picks up the **session** zone. |
 | ISO-8601 with offset | `from_iso8601_timestamp('2025-06-20T00:00:00+02:00')` | Useful when the offset is a parameter. |
 | UTC explicit | `timestamp '2025-06-20 00:00:00 UTC'` | Simplest for operational queries. |
 
-`TIMESTAMP_TZ` results are packed in UTC; project with `AT TIME ZONE` to
-display rows in a local zone (the predicate still pushes a UTC window to
-KairosDB):
+`now()`-relative predicates work in **any** session zone (the comparison is
+instant-based), and results render **in the session zone** — like
+`from_unixtime` — so `SET TIME ZONE` localizes the display directly:
 
 ```sql
-SELECT timestamp AT TIME ZONE 'Europe/Rome' AS ts, value
+SET TIME ZONE 'Europe/Rome';
+SELECT timestamp, value
 FROM   kairosdb.kairosdb."sys.load"
-WHERE  timestamp >= timestamp '2025-06-20 00:00:00 Europe/Rome';
+WHERE  timestamp > now() - INTERVAL '15' MINUTE;
+-- the timestamp column displays as ... Europe/Rome (same instant as UTC)
 ```
+
+**`TIMESTAMP_MILLIS` — `TIMESTAMP(3)` without zone (UTC wall clocks; session zone ignored).**
+A zone-less literal is taken as a **UTC wall clock** — the session zone is *not*
+applied. `WHERE timestamp = timestamp '2025-06-20 00:00:00'` always means
+`2025-06-20 00:00:00 UTC` regardless of `SET TIME ZONE`, and results display as
+the bare UTC wall clock (no zone label). Use this only when the consumer wants
+raw UTC wall clocks; otherwise prefer `TIMESTAMP_TZ`.
+
+> **Pitfall:** with `TIMESTAMP_MILLIS`, a `now()`-based predicate under a
+> non-UTC session zone is coerced through that zone and then read as UTC,
+> shifting the window by your offset (and often returning **no rows**). Keep the
+> session in UTC for `TIMESTAMP_MILLIS`, or switch to `TIMESTAMP_TZ`.
 
 ### Pushdown surface
 
