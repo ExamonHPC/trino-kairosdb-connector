@@ -35,15 +35,11 @@ Status: public beta / release candidate.
 
 1. Download the release jar matching your Trino version from the
    [Releases page](https://github.com/ExamonHPC/trino-kairosdb-connector/releases)
-   (artifacts are tagged `…-trino<N>`), or build the shaded jar yourself
-   (see [Building from source](#building-from-source) below). A pre-built Trino
-   image with the plugin baked in is also published to GHCR:
-   ```bash
-   docker pull ghcr.io/examonhpc/trino-kairosdb-connector:trino<N>
-   ```
+   (tagged `v<connector>-trino<N>` — see the [compatibility matrix](#compatibility-matrix)),
+   or build the shaded jar yourself (see [Building from source](#building-from-source) below).
 2. Drop the jar under `<trino>/plugin/kairosdb/`:
    ```text
-   <trino>/plugin/kairosdb/kairosdb-connector-<version>.jar
+   <trino>/plugin/kairosdb/kairosdb-connector-<version>-trino<N>.jar
    ```
 3. Add a catalog file at `<trino>/etc/catalog/kairosdb.properties` -
    the [example](trino-config/catalog/kairosdb.properties) in this repo
@@ -283,36 +279,41 @@ Dev stack documented in [`scripts/README.md`](scripts/README.md).
 
 ## Continuous integration & releases
 
-GitHub Actions workflows under [`.github/workflows/`](.github/workflows/):
+Releases follow a **per-cell** model: the connector version and the Trino
+version are independent axes, and each `(connector, Trino)` pair is built,
+tested and shipped from its own branch. The connector source only loads on the
+exact Trino it was compiled against (enforced at runtime), so there is no shared
+cross-version code — each cell is isolated.
 
-| Workflow            | Trigger                                   | What it does                                                                                                   |
-|---------------------|-------------------------------------------|----------------------------------------------------------------------------------------------------------------|
-| `ci.yml`            | push / PR to `master`                     | Builds the jar and runs unit tests; integration tests run on `master` and on PRs labelled `integration`.       |
-| `release.yml`       | push to `master` (version change), or `workflow_dispatch` | Builds + unit/integration-tests the pinned version, then publishes the jar to a GitHub Release and the image to GHCR. Idempotent: skips if that `…-trino<N>` release already exists. |
-| `trino-watcher.yml` | daily cron, or `workflow_dispatch`         | Detects a newer `trinodb/trino` release and opens a **draft PR** bumping `trino.version`, with a port checklist. It does not release. |
-| `backport.yml`      | a merged PR labelled `backport release/trino-<N>` | Cherry-picks the PR onto that release branch so a fix can ship to an older still-supported Trino line. |
+| Thing | Form | Example |
+|-------|------|---------|
+| Release branch | `release/v<X>-trino<Y>` | `release/v3.0.0-rc1-trino479` |
+| GitHub Release / tag | `v<X>-trino<Y>` | `v3.0.0-rc1-trino479` |
+| Plugin jar | `kairosdb-connector-<X>-trino<Y>.jar` | `kairosdb-connector-3.0.0-rc1-trino479.jar` |
 
-The newest supported Trino version is the one pinned in `pom.xml`
-(`trino.version`) on `master` — controlled explicitly, **not** auto-chased.
-Because Trino offers no cross-version SPI stability (see
-[Compatibility](#compatibility)), adopting a new release is a reviewed step: the
-watcher proposes the bump as a draft PR, CI runs the port attempt, a human
-finishes it (deps / SPI / JDK as needed), and **merging the PR** publishes the
-new `…-trino<N>` artifacts.
+[`release.yml`](.github/workflows/release.yml) is the only workflow: pushing a
+`release/v*-trino*` branch builds + unit/integration-tests it on the JDK that
+branch's pom pins (476 → 24, 479 → 25) and publishes the GitHub Release with the
+shaded jar (jars only; idempotent — an existing release is skipped). `master` is
+the leading edge for development and never publishes.
 
-**Release branches.** Older versions that are still supported live on
-`release/trino-<N>` branches, each pinned to its Trino version and publishing
-its own `…-trino<N>` artifacts (the `latest` tag always tracks the newest line).
-Cut such a branch from `master` *just before* advancing `master` to a newer
-Trino; ship fixes by merging to `master` then labelling the PR
-`backport release/trino-<N>`. Full procedure in
-[`scripts/README.md`](scripts/README.md#maintaining-release-branches).
+To **adopt a new Trino** or **ship a fix across Trino lines**, see the
+procedures in [`scripts/README.md`](scripts/README.md#releasing).
+
+### Compatibility matrix
+
+| Connector | Trino | JDK | Release |
+|-----------|-------|-----|---------|
+| `3.0.0-rc1` | 476 | 24 | [`v3.0.0-rc1-trino476`](https://github.com/ExamonHPC/trino-kairosdb-connector/releases/tag/v3.0.0-rc1-trino476) |
+| `3.0.0-rc1` | 479 | 25 | [`v3.0.0-rc1-trino479`](https://github.com/ExamonHPC/trino-kairosdb-connector/releases/tag/v3.0.0-rc1-trino479) |
+
+Pick the jar matching your Trino version; it will refuse to load on any other.
 
 ## Compatibility
 
 | Component              | Tested with                                        | Notes                                                                                                                                                  |
 |------------------------|----------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Trino                  | **479** (currently supported)                      | Trino guarantees no cross-version SPI stability, so each release is built and tested against one exact Trino version. The supported version is pinned in `pom.xml` and advanced deliberately via a reviewed PR (see [CI & releases](#continuous-integration--releases)). Each supported version is published as a `…-trino<N>` artifact (jar + GHCR image); pick the one matching your Trino. Older artifacts remain on the Releases page but only the pinned version receives fixes. |
+| Trino                  | **476, 479** (per-cell releases)                   | Trino guarantees no cross-version SPI stability, so each version is built and tested against one exact Trino and shipped as its own `v<X>-trino<Y>` release (jar). Pick the one matching your Trino — see the [compatibility matrix](#compatibility-matrix). New versions are added per-cell (see [`scripts/README.md`](scripts/README.md#releasing)). |
 | KairosDB               | **1.2.x** (1.2.2 in CI via `examonhpc/kairosdb`)   | Any KairosDB exposing the `/api/v1/metricnames`, `/api/v1/datapoints/query`, and `/api/v1/datapoints/query/tags` endpoints should work.                |
 | JDK (build)            | **25**                                             | Required by `mvn package` (Trino 479+ targets Java 25).                                                                                                                             |
 | OS (build / runtime)   | Linux x86_64, Linux arm64, macOS arm64             | Inherited from Trino and the (pure-Java, native-free) bundled dependencies.                                                                            |

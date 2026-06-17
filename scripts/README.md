@@ -150,111 +150,77 @@ dev loop above.
 
 ## Releasing
 
-A release is **one artifact built and tested against one exact Trino
-version** - Trino guarantees no cross-version SPI stability, so each Trino
-version needs its own build. Artifacts for a connector version `V` (from
-`pom.xml`) and Trino version `N` are named:
+Each release is **one connector version built and tested against one exact
+Trino version** — Trino has no cross-version SPI stability, so every
+`(connector, Trino)` pair is its own build, published from its own branch.
+For connector version `X` (the project `<version>` in `pom.xml`) and Trino
+version `Y`:
 
-| Artifact            | Pattern                               | Example                                   |
-|---------------------|---------------------------------------|-------------------------------------------|
-| GitHub Release tag  | `<V>-trino<N>`                        | `3.0.0-rc1-trino479`                      |
-| Plugin jar          | `kairosdb-connector-<V>-trino<N>.jar` | `kairosdb-connector-3.0.0-rc1-trino479.jar` |
-| GHCR image          | `…:trino<N>`, `…:<V>-trino<N>`, `…:latest` | `…:trino479`                         |
+| Thing                      | Form                                   | Example                                       |
+|----------------------------|----------------------------------------|-----------------------------------------------|
+| Release branch             | `release/v<X>-trino<Y>`                | `release/v3.0.0-rc1-trino479`                 |
+| Git tag / GitHub Release   | `v<X>-trino<Y>`                        | `v3.0.0-rc1-trino479`                         |
+| Plugin jar (release asset) | `kairosdb-connector-<X>-trino<Y>.jar`  | `kairosdb-connector-3.0.0-rc1-trino479.jar`   |
 
-`:latest` (and the GitHub "Latest" flag) only ever points at the **newest**
-released Trino version, so back-building an older one never demotes a newer
-release.
+Each `release/v<X>-trino<Y>` branch pins everything for its cell in `pom.xml`:
+`<version>` = `X`, `<trino.version>` = `Y`, and `<java.version>` to the JDK
+that Trino needs (476 → 24, 479 → 25). The shaded-jar name is derived from
+those via the maven-shade `finalName`, so a plain `mvn package` on the branch
+emits the correctly-named jar. `master` is the **leading edge** (latest
+connector × latest Trino) for development; it never publishes.
 
-### Via GitHub Actions (recommended)
+### Publishing a cell (GitHub Actions)
 
-The supported Trino version is the one pinned in `pom.xml` (`trino.version`)
-on `master`. The normal flow is hands-off after review:
-
-1. [`trino-watcher.yml`](../.github/workflows/trino-watcher.yml) polls
-   `trinodb/trino` daily and, when a newer version appears, opens a **draft
-   PR** bumping `trino.version` with a port checklist. It does not release.
-2. Finish the port on that branch (deps / SPI / JDK as CI reveals) until CI
-   is green, then merge.
-3. The merge changes `pom.xml` on `master`, which triggers
-   [`release.yml`](../.github/workflows/release.yml): it builds, runs
-   unit + integration tests, and - only if green - publishes the jar to a
-   GitHub Release and the image to GHCR. It is idempotent (skips if that
-   `…-trino<N>` release already exists), so it never republishes a version.
-
-To back-build a specific older Trino version (e.g. for a team that hasn't
-upgraded), dispatch the Release workflow directly:
+[`release.yml`](../.github/workflows/release.yml) runs on a push to any
+`release/v*-trino*` branch. It reads `<java.version>` from the pom and sets up
+that JDK, runs `mvn -Pintegration verify` (unit + Testcontainers integration
+tests against the pinned Trino — KairosDB is pulled from the public
+`examonhpc/kairosdb` Docker Hub image), then publishes a GitHub Release tagged
+`v<X>-trino<Y>` (derived from the branch name) with the shaded jar attached.
+It is idempotent: if that release already exists it skips, so a docs-only push
+to the branch is a no-op. Jars only — no images. So publishing is just:
 
 ```bash
-gh workflow run release.yml -f trino_version=479
-# Empty trino_version uses the value pinned in pom.xml.
-# Or: Actions tab -> "Release" -> Run workflow.
+git push -u origin release/v<X>-trino<Y>
 ```
 
-> Releases are immutable. To re-cut for the same Trino version after a fix,
-> bump the connector version (the project `<version>` in `pom.xml`) so the
-> `…-trino<N>` tag is new.
+### Add support for a new Trino version `Z`
 
-### Manual / local
+1. On `master`, set `<trino.version>=Z` and `<java.version>` to the JDK it needs.
+2. Port until `mvn -Pintegration verify` is green. Deps are pinned in `pom.xml`;
+   the only Trino-specific source is the `TypeDeserializerModule` call in
+   `KairosdbConnectorFactory`; bump the JDK if you hit `UnsupportedClassVersionError`.
+3. Cut and push the cell:
+   ```bash
+   git checkout -b release/v<X>-trino<Z>
+   git push -u origin release/v<X>-trino<Z>      # release.yml publishes v<X>-trino<Z>
+   ```
 
-When you need an artifact without Actions (air-gapped, ad-hoc), reproduce
-what the workflow does:
+### Ship a fix to one or more Trino lines
+
+A connector fix is Trino-agnostic, so it is one commit replayed per line, keeping
+the **same** new connector version `X+1` across them (differing only by `-trino<Y>`):
 
 ```bash
-# 1. Build + test the jar against the target Trino version.
-scripts/build.sh -Dtrino.version=479 -Pintegration verify
-#    Shaded jar lands at target/kairosdb-connector-<V>.jar.
-#    (Add -Dtest=... or drop -Pintegration to skip the Testcontainers suite.)
-
-# 2. Optional: build the self-contained runtime image for that version.
-docker build --build-arg TRINO_VERSION=479 -t trino-kairosdb:trino479 .
+# author the fix on master (or the newest cell), then for each Trino line:
+git checkout release/v<X>-trino<Y>
+git cherry-pick <fix-sha>
+# bump pom <version> to X+1
+git checkout -b release/v<X+1>-trino<Y>
+git push -u origin release/v<X+1>-trino<Y>       # release.yml publishes v<X+1>-trino<Y>
 ```
 
-To match the workflow's artifact naming, stamp the Trino version into the
-version before packaging:
+Releases are immutable: to re-cut for the same Trino after a fix, bump the
+connector version so the `v<X+1>-trino<Y>` tag is new. Cherry-pick conflicts are
+rare and confined to that one Trino-specific file.
+
+### Build a cell locally
 
 ```bash
-scripts/build.sh versions:set -DnewVersion=3.0.0-rc1-trino479 -DgenerateBackupPoms=false
-scripts/build.sh -Dtrino.version=479 -Pintegration verify
-# -> target/kairosdb-connector-3.0.0-rc1-trino479.jar
+# on a release/v<X>-trino<Y> branch (its pom already pins X, Y and the JDK):
+scripts/build.sh clean package         # -> target/kairosdb-connector-<X>-trino<Y>.jar
+scripts/test-integration.sh            # full unit + Testcontainers integration suite
 ```
-
-### Maintaining release branches
-
-`master` always holds the newest supported Trino version. A team that can't
-upgrade Trino in lockstep needs fixes on an older line, so each version we keep
-supporting lives on its own long-lived `release/trino-<N>` branch. Both `ci.yml`
-and `release.yml` run on `release/trino-*` branches, so a branch builds, tests
-and publishes its own `…-trino<N>` artifacts independently of `master`.
-
-**Cut a release branch when advancing `master`.** Just before adopting a newer
-Trino (i.e. before merging the watcher's bump PR), snapshot the outgoing line:
-
-```bash
-git checkout master
-git pull
-git checkout -b release/trino-479      # the version master currently pins
-git push -u origin release/trino-479
-# then let master move on to the new version via the watcher PR
-```
-
-From then on `release/trino-479` is the home of the 479 line; protect it with
-the same required-CI rule as `master`.
-
-**Ship a fix to a supported older line (backport).**
-
-1. Land the fix on `master` as usual.
-2. Add the label `backport release/trino-479` to that PR (before or after
-   merge). On merge, [`backport.yml`](../.github/workflows/backport.yml) opens a
-   PR that cherry-picks it onto `release/trino-479`.
-3. On that backport PR, **bump the connector version** (the project `<version>`
-   in `pom.xml`, e.g. `3.0.0-rc1` → `3.0.0-rc2`) — releases are immutable, so a
-   new artifact needs a new `…-trino479` tag.
-4. Merge it. `release.yml` on `release/trino-479` publishes
-   `kairosdb-connector-3.0.0-rc2-trino479.jar` (and GHCR `:trino479`). The
-   `:latest` tag is untouched because 479 is no longer the newest line.
-
-**Dropping support.** When a line is end-of-life, delete its branch; existing
-artifacts stay on the Releases page, they just stop receiving fixes.
 
 ## Teardown
 
