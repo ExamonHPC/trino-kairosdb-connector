@@ -57,11 +57,37 @@ Status: public beta / release candidate.
 | `kairosdb.split-size`                          | `1d`    | Width of one time-range split. Sessionable as `split_size_millis`.                                        |
 | `kairosdb.metadata.cache-ttl`                  | `30s`   | Per-worker cache for metric names and per-metric tag schemas.                                             |
 | `kairosdb.read-timeout`                        | `60s`   | OkHttp read timeout for calls to KairosDB.                                                                |
+| `kairosdb.auth.user`                           | -       | Optional. Username for HTTP Basic auth. Must be set together with `kairosdb.auth.password`; must not contain `:`. See [Authentication](#authentication). |
+| `kairosdb.auth.password`                       | -       | Optional. Password for HTTP Basic auth. Security-sensitive (masked in config logging).                    |
 | `kairosdb.case-insensitive-name-matching`      | `true`  | When true, mixed-case KairosDB metrics are reachable via their lowercase form (recommended), dropped when false. Independently, KairosDB metrics that share a lowercase form get hash-suffixed Trino-side names; see [Case collisions](#case-collisions) below.|
 
 Legacy unprefixed keys (`url`, `split.size.millis`, `timestamp.format`,
 `timestamp.default.start.hours`) are still accepted as aliases so older
 catalog files keep working without modification.
+
+## Authentication
+
+If your KairosDB enforces HTTP Basic auth (`kairosdb.jetty.basic_auth.user`
+/ `.password` in KairosDB's own `kairosdb.properties`), set the matching
+credentials in the catalog file:
+
+```properties
+kairosdb.auth.user=trino
+kairosdb.auth.password=secret
+```
+
+Set both or neither — a lone user or password fails catalog validation. The
+`Authorization: Basic` header is sent on every request the connector makes
+(metric listing, tag discovery, datapoint queries).
+
+Credentials embedded in `kairosdb.url` (`http://user:pass@host:8080`) are
+**rejected at catalog load**: the HTTP client never derives auth from URL
+userinfo, so accepting that form would silently send unauthenticated
+requests, and it would leak the password into logged URLs. Use the two
+properties above instead.
+
+Basic auth is base64 encoding, not encryption — terminate TLS in front of
+KairosDB or keep the Trino↔KairosDB traffic on a trusted network.
 
 ## Query
 
@@ -318,8 +344,8 @@ procedures in [`scripts/README.md`](scripts/README.md#releasing).
 
 | Connector | Trino | JDK | Release |
 |-----------|-------|-----|---------|
-| `3.0.0-rc1` | 476 | 24 | [`v3.0.0-rc1-trino476`](https://github.com/ExamonHPC/trino-kairosdb-connector/releases/tag/v3.0.0-rc1-trino476) |
-| `3.0.0-rc1` | 479 | 25 | [`v3.0.0-rc1-trino479`](https://github.com/ExamonHPC/trino-kairosdb-connector/releases/tag/v3.0.0-rc1-trino479) |
+| `3.0.0-rc3` | 476 | 24 | [`v3.0.0-rc3-trino476`](https://github.com/ExamonHPC/trino-kairosdb-connector/releases/tag/v3.0.0-rc3-trino476) |
+| `3.0.0-rc3` | 479 | 25 | [`v3.0.0-rc3-trino479`](https://github.com/ExamonHPC/trino-kairosdb-connector/releases/tag/v3.0.0-rc3-trino479) |
 
 Pick the jar matching your Trino version; it will refuse to load on any other.
 
