@@ -2,13 +2,16 @@ package io.examon.trino.kairosdb_connector;
 
 import io.airlift.configuration.Config;
 import io.airlift.configuration.ConfigDescription;
+import io.airlift.configuration.ConfigSecuritySensitive;
 import io.airlift.configuration.LegacyConfig;
 import io.airlift.units.Duration;
 import io.airlift.units.MinDuration;
+import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 
 import java.net.URI;
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -37,6 +40,8 @@ public class KairosdbConfig
     private Duration metadataCacheTtl = new Duration(30, TimeUnit.SECONDS);
     private Duration readTimeout = new Duration(60, TimeUnit.SECONDS);
     private boolean caseInsensitiveNameMatching = true;
+    private String authUser;
+    private String authPassword;
 
     @NotNull
     public URI getKairosdbUri()
@@ -169,5 +174,52 @@ public class KairosdbConfig
     {
         this.caseInsensitiveNameMatching = caseInsensitiveNameMatching;
         return this;
+    }
+
+    @NotNull
+    public Optional<String> getAuthUser()
+    {
+        return Optional.ofNullable(authUser);
+    }
+
+    @Config("kairosdb.auth.user")
+    @ConfigDescription("Username for HTTP Basic authentication against the KairosDB API")
+    public KairosdbConfig setAuthUser(String authUser)
+    {
+        this.authUser = authUser;
+        return this;
+    }
+
+    @NotNull
+    public Optional<String> getAuthPassword()
+    {
+        return Optional.ofNullable(authPassword);
+    }
+
+    @Config("kairosdb.auth.password")
+    @ConfigSecuritySensitive
+    @ConfigDescription("Password for HTTP Basic authentication against the KairosDB API")
+    public KairosdbConfig setAuthPassword(String authPassword)
+    {
+        this.authPassword = authPassword;
+        return this;
+    }
+
+    @AssertTrue(message = "kairosdb.auth.user and kairosdb.auth.password must be set together (both or neither)")
+    public boolean isBasicAuthConfigValid()
+    {
+        return (authUser == null) == (authPassword == null);
+    }
+
+    @AssertTrue(message = "kairosdb.auth.user must not contain ':' (reserved separator in HTTP Basic credentials)")
+    public boolean isAuthUserWellFormed()
+    {
+        return authUser == null || !authUser.contains(":");
+    }
+
+    @AssertTrue(message = "kairosdb.url must not embed credentials (http://user:pass@host); use kairosdb.auth.user and kairosdb.auth.password instead")
+    public boolean isUrlFreeOfUserInfo()
+    {
+        return kairosdbUri == null || kairosdbUri.getUserInfo() == null;
     }
 }
