@@ -17,7 +17,9 @@ import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.TimestampWithTimeZoneType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.VarcharType;
+import okhttp3.Credentials;
 import okhttp3.HttpUrl;
+import okhttp3.Interceptor;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -40,6 +42,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
+import static com.google.common.net.HttpHeaders.AUTHORIZATION;
 import static io.examon.trino.kairosdb_connector.KairosdbErrorCode.KAIROSDB_METRICS_RETRIEVE_ERROR;
 import static io.examon.trino.kairosdb_connector.KairosdbErrorCode.KAIROSDB_PARSE_ERROR;
 import static java.lang.String.format;
@@ -98,9 +101,7 @@ public class KairosdbClient
     {
         this.config = requireNonNull(config, "config is null");
         this.baseUrl = httpUrlFromUri(config.getKairosdbUri());
-        this.httpClient = new OkHttpClient.Builder()
-                .readTimeout(config.getReadTimeout().toMillis(), TimeUnit.MILLISECONDS)
-                .build();
+        this.httpClient = buildHttpClient(config);
         this.jsonMapper = new ObjectMapper();
         long ttlMillis = config.getMetadataCacheTtl().toMillis();
         this.metricViewCache = Suppliers.memoizeWithExpiration(this::buildMetricView, ttlMillis, TimeUnit.MILLISECONDS);
@@ -603,5 +604,28 @@ public class KairosdbClient
             throw new IllegalArgumentException("Invalid kairosdb.url: " + uri);
         }
         return parsed;
+    }
+
+    private static OkHttpClient buildHttpClient(KairosdbConfig config)
+    {
+        OkHttpClient.Builder builder = new OkHttpClient.Builder()
+                .readTimeout(config.getReadTimeout().toMillis(), TimeUnit.MILLISECONDS);
+        // Config validation guarantees user and password are set together
+        // (and that the URL carries no userinfo), so presence of both here
+        // is the only auth-on signal.
+        if (config.getAuthUser().isPresent() && config.getAuthPassword().isPresent()) {
+            builder.addInterceptor(basicAuth(config.getAuthUser().get(), config.getAuthPassword().get()));
+        }
+        return builder.build();
+    }
+
+    private static Interceptor basicAuth(String user, String password)
+    {
+        // Credentials.basic encodes in ISO-8859-1, matching KairosDB's Jetty
+        // basic-auth decoder.
+        String credential = Credentials.basic(user, password);
+        return chain -> chain.proceed(chain.request().newBuilder()
+                .header(AUTHORIZATION, credential)
+                .build());
     }
 }

@@ -23,6 +23,12 @@ services:
     environment:
       - KAIROS_JETTY_PORT=8080
     entrypoint: ["/bin/sh", "-c"]
+    # To test the connector's HTTP Basic Auth locally, add these two extra
+    # sed expressions inside the block scalar below (before the final
+    # /opt/kairosdb... line), then set kairosdb.auth.user/password in
+    # trino-config/catalog/kairosdb.properties and rerun scripts/redeploy.sh:
+    #     -e 's|^#kairosdb.jetty.basic_auth.user=.*|kairosdb.jetty.basic_auth.user=admin|'
+    #     -e 's|^#kairosdb.jetty.basic_auth.password=.*|kairosdb.jetty.basic_auth.password=secret|'
     command:
       - >-
         sed -i
